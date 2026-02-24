@@ -2,7 +2,7 @@
 
 A Factorio 2.0 mod that answers the question: **"Why is this machine not working?"**
 
-Bottleneck Analyzer continuously samples every assembling machine, furnace, and rocket silo in your factory, records which ingredients are missing when machines stall, and shows you aggregate statistics so you can pinpoint your supply chain's weakest links.
+Bottleneck Analyzer continuously samples every crafting building in your factory, records which ingredients are missing when machines stall, and shows you aggregate statistics so you can pinpoint your supply chain's weakest links. Works with all assembling machines, furnaces, rocket silos, and any modded buildings that use these types (Pyanodons, Krastorio, etc.).
 
 ## How It Works
 
@@ -23,26 +23,16 @@ When you open the GUI, you pick an item and instantly see what percentage of the
 
 ## Usage
 
-1. Click the Bottleneck Analyzer button in the **bottom shortcut bar** (locomotive icon — you may need to pin it via the shortcut bar's configure menu)
+1. Click the Bottleneck Analyzer button in the **bottom shortcut bar** (you may need to pin it via the shortcut bar's configure menu)
 2. Select an item using the item chooser
 3. View the ingredient breakdown — taller bars mean bigger bottlenecks
 4. Click an ingredient name to navigate to that item's bottleneck view
 5. Use the back button to return to the previous item
 6. Adjust the time window with the filter buttons
 
-## Tracked Machine Types
+## Compatibility
 
-- Assembling machines
-- Furnaces
-- Rocket silos
-
-## Installation
-
-Copy or symlink the `bottleneck-analyzer/` directory into your Factorio mods folder:
-
-- **macOS:** `~/Library/Application Support/factorio/mods/`
-- **Linux:** `~/.factorio/mods/`
-- **Windows:** `%APPDATA%/Factorio/mods/`
+Works with any building that uses Factorio's crafting machine types — assembling machines, furnaces, and rocket silos. This includes modded buildings like Pyanodons complexes, Krastorio machines, and any other mod that adds crafting entities.
 
 ## Settings
 

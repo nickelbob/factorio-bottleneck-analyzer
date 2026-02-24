@@ -505,12 +505,27 @@ function gui.on_tab_changed(event)
 
   local state = get_player_state(player.index)
 
-  -- Store the selected recipe so we can restore it on rebuild
+  -- Store the selected recipe so we can restore it on rebuild.
+  -- Tabs are built from the filtered recipes_with_data list, so we need
+  -- to reconstruct that same filtered list to map tab index -> recipe name.
   if state.selected_item then
-    local recipes = data_store.get_recipes_for_item(state.selected_item)
+    local slice = TIME_SLICES[state.time_slice_index]
+    local min_tick = 0
+    if slice.ticks > 0 then
+      min_tick = game.tick - slice.ticks
+      if min_tick < 0 then min_tick = 0 end
+    end
+    local all_recipes = data_store.get_recipes_for_item(state.selected_item)
+    local recipes_with_data = {}
+    for _, rn in ipairs(all_recipes) do
+      local samples = data_store.query(rn, min_tick)
+      if #samples > 0 then
+        recipes_with_data[#recipes_with_data + 1] = rn
+      end
+    end
     local idx = element.selected_tab_index
-    if idx and recipes[idx] then
-      state.selected_recipe = recipes[idx]
+    if idx and recipes_with_data[idx] then
+      state.selected_recipe = recipes_with_data[idx]
     end
   end
 end

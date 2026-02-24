@@ -74,6 +74,7 @@ script.on_event(defines.events.on_lua_shortcut, function(event)
   end
 end)
 
+
 -- GUI events
 script.on_event(defines.events.on_gui_click, function(event)
   gui.on_click(event)
@@ -85,6 +86,10 @@ end)
 
 script.on_event(defines.events.on_gui_selected_tab_changed, function(event)
   gui.on_tab_changed(event)
+end)
+
+script.on_event(defines.events.on_gui_closed, function(event)
+  gui.on_closed(event)
 end)
 
 -- Settings changed

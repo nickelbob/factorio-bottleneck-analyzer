@@ -94,33 +94,24 @@ local function build_ingredient_display(container, recipe_name, min_tick)
     row.style.horizontally_stretchable = true
     row.style.height = 36
 
-    -- Ingredient icon + name (clickable for items to navigate)
-    if ingredient.type == "item" then
-      local proto = prototypes.item[ingredient.name]
-      local caption = proto
-          and {"", "[item=" .. ingredient.name .. "] ", proto.localised_name}
-          or  "[item=" .. ingredient.name .. "] " .. ingredient.name
-      local btn = row.add({
-        type = "button",
-        name = "bottleneck-analyzer-ingredient__" .. ingredient.name,
-        caption = caption,
-        style = "mini_button",
-        tooltip = { "bottleneck-analyzer.click-to-view" },
-      })
-      btn.style.width = 200
-      btn.style.height = 36
-      btn.style.horizontal_align = "left"
-    else
-      local proto = prototypes.fluid[ingredient.name]
-      local caption = proto
-          and {"", "[fluid=" .. ingredient.name .. "] ", proto.localised_name}
-          or  "[fluid=" .. ingredient.name .. "] " .. ingredient.name
-      local label = row.add({
-        type = "label",
-        caption = caption,
-      })
-      label.style.width = 200
-    end
+    -- Ingredient icon + name (clickable to navigate)
+    local ing_prefix = ingredient.type == "fluid" and "fluid" or "item"
+    local proto = ingredient.type == "fluid"
+        and prototypes.fluid[ingredient.name]
+        or  prototypes.item[ingredient.name]
+    local caption = proto
+        and {"", "[" .. ing_prefix .. "=" .. ingredient.name .. "] ", proto.localised_name}
+        or  "[" .. ing_prefix .. "=" .. ingredient.name .. "] " .. ingredient.name
+    local btn = row.add({
+      type = "button",
+      name = "bottleneck-analyzer-ingredient__" .. ingredient.type .. "__" .. ingredient.name,
+      caption = caption,
+      style = "mini_button",
+      tooltip = { "bottleneck-analyzer.click-to-view" },
+    })
+    btn.style.width = 200
+    btn.style.height = 36
+    btn.style.horizontal_align = "left"
 
     -- Progress bar
     local ing_prefix = ingredient.type == "fluid" and "fluid" or "item"
@@ -162,6 +153,7 @@ local function build_main_window(player)
   frame.auto_center = true
   frame.style.minimal_width = 500
   frame.style.maximal_height = 600
+  player.opened = frame
 
   -- Title bar
   local titlebar = frame.add({
@@ -229,7 +221,7 @@ local function build_main_window(player)
     name = "bottleneck-analyzer-item-chooser",
     elem_type = "item",
   })
-  if state.selected_item then
+  if state.selected_item and prototypes.item[state.selected_item] then
     chooser.elem_value = state.selected_item
   end
 
@@ -463,14 +455,14 @@ function gui.on_click(event)
   end
 
   -- Ingredient navigation buttons
-  local ingredient_match = name:match("^bottleneck%-analyzer%-ingredient__(.+)$")
-  if ingredient_match then
+  -- Ingredient navigation buttons (format: ingredient__type__name)
+  local ing_type, ing_name = name:match("^bottleneck%-analyzer%-ingredient__(%a+)__(.+)$")
+  if ing_name then
     local state = get_player_state(player.index)
-    -- Push current item onto history stack
     if state.selected_item then
       state.history[#state.history + 1] = state.selected_item
     end
-    state.selected_item = ingredient_match
+    state.selected_item = ing_name
     state.selected_recipe = nil
     build_main_window(player)
     return
@@ -535,8 +527,26 @@ function gui.refresh_all()
   for _, player in pairs(game.players) do
     local state = get_player_state(player.index)
     if state.open and player.gui.screen["bottleneck-analyzer-main"] then
+      -- Skip refresh if player has a GUI element open (e.g. item chooser search)
+      if player.opened and player.opened.name ~= "bottleneck-analyzer-main" then
+        goto continue
+      end
       gui.update_recipe_area(player)
+      ::continue::
     end
+  end
+end
+
+--- Handle GUI closed (Esc key).
+function gui.on_closed(event)
+  local player = game.get_player(event.player_index)
+  if not player then return end
+
+  if event.element and event.element.valid
+      and event.element.name == "bottleneck-analyzer-main" then
+    local state = get_player_state(player.index)
+    destroy_main_window(player)
+    state.open = false
   end
 end
 

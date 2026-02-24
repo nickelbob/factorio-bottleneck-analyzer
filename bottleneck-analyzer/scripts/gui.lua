@@ -219,10 +219,14 @@ local function build_main_window(player)
   local chooser = item_row.add({
     type = "choose-elem-button",
     name = "bottleneck-analyzer-item-chooser",
-    elem_type = "item",
+    elem_type = "signal",
   })
-  if state.selected_item and prototypes.item[state.selected_item] then
-    chooser.elem_value = state.selected_item
+  if state.selected_item then
+    if prototypes.item[state.selected_item] then
+      chooser.elem_value = { type = "item", name = state.selected_item }
+    elseif prototypes.fluid[state.selected_item] then
+      chooser.elem_value = { type = "fluid", name = state.selected_item }
+    end
   end
 
   -- Separator
@@ -275,6 +279,38 @@ local function build_main_window(player)
       caption = { "bottleneck-analyzer.select-item" },
       style = "label",
     })
+  end
+end
+
+--- Update the chooser element to match the current selected_item state.
+function gui.sync_chooser(player)
+  local state = get_player_state(player.index)
+  local main = player.gui.screen["bottleneck-analyzer-main"]
+  if not main then return end
+
+  -- Find the chooser nested in the content frame
+  for _, child in pairs(main.children) do
+    if child.type == "frame" then
+      for _, sub in pairs(child.children) do
+        if sub.type == "flow" then
+          local chooser = sub["bottleneck-analyzer-item-chooser"]
+          if chooser then
+            if state.selected_item then
+              if prototypes.item[state.selected_item] then
+                chooser.elem_value = { type = "item", name = state.selected_item }
+              elseif prototypes.fluid[state.selected_item] then
+                chooser.elem_value = { type = "fluid", name = state.selected_item }
+              else
+                chooser.elem_value = nil
+              end
+            else
+              chooser.elem_value = nil
+            end
+            return
+          end
+        end
+      end
+    end
   end
 end
 
@@ -437,7 +473,8 @@ function gui.on_click(event)
     if #state.history > 0 then
       state.selected_item = table.remove(state.history)
       state.selected_recipe = nil
-      build_main_window(player)
+      gui.sync_chooser(player)
+      gui.update_recipe_area(player)
     end
     return
   end
@@ -449,12 +486,11 @@ function gui.on_click(event)
     if idx and idx >= 1 and idx <= #TIME_SLICES then
       local state = get_player_state(player.index)
       state.time_slice_index = idx
-      build_main_window(player)
+      gui.update_recipe_area(player)
     end
     return
   end
 
-  -- Ingredient navigation buttons
   -- Ingredient navigation buttons (format: ingredient__type__name)
   local ing_type, ing_name = name:match("^bottleneck%-analyzer%-ingredient__(%a+)__(.+)$")
   if ing_name then
@@ -464,7 +500,8 @@ function gui.on_click(event)
     end
     state.selected_item = ing_name
     state.selected_recipe = nil
-    build_main_window(player)
+    gui.sync_chooser(player)
+    gui.update_recipe_area(player)
     return
   end
 end
@@ -479,9 +516,21 @@ function gui.on_elem_changed(event)
   if not player then return end
 
   local state = get_player_state(player.index)
-  state.selected_item = element.elem_value
+  local val = element.elem_value
+  if val then
+    -- Signal chooser returns a SignalID: {type=, name=} or just a name string
+    if type(val) == "table" then
+      state.selected_item = val.name
+    elseif type(val) == "string" then
+      state.selected_item = val
+    else
+      state.selected_item = nil
+    end
+  else
+    state.selected_item = nil
+  end
   state.selected_recipe = nil
-  state.history = {}  -- clear history on manual item selection
+  state.history = {}
 
   gui.update_recipe_area(player)
 end
@@ -518,21 +567,6 @@ function gui.on_tab_changed(event)
     local idx = element.selected_tab_index
     if idx and recipes_with_data[idx] then
       state.selected_recipe = recipes_with_data[idx]
-    end
-  end
-end
-
---- Refresh all open GUIs (called periodically).
-function gui.refresh_all()
-  for _, player in pairs(game.players) do
-    local state = get_player_state(player.index)
-    if state.open and player.gui.screen["bottleneck-analyzer-main"] then
-      -- Skip refresh if player has a GUI element open (e.g. item chooser search)
-      if player.opened and player.opened.name ~= "bottleneck-analyzer-main" then
-        goto continue
-      end
-      gui.update_recipe_area(player)
-      ::continue::
     end
   end
 end

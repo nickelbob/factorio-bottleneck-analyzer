@@ -17,7 +17,6 @@ local function register_nth_tick()
   local ticks = tracker.get_sample_ticks()
   script.on_nth_tick(ticks, function(event)
     tracker.sample(event.tick)
-    gui.refresh_all()
   end)
 end
 

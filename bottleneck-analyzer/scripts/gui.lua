@@ -81,10 +81,25 @@ local function build_ingredient_display(container, recipe_name, min_tick)
     return
   end
 
-  -- Display each ingredient with a progress bar
+  -- Build sorted ingredient list by severity
+  local sorted_ingredients = {}
   for _, ingredient in pairs(recipe_proto.ingredients) do
     local waiting_count = ingredient_waiting[ingredient.name] or 0
     local percentage = (waiting_count / total_machine_samples) * 100
+    sorted_ingredients[#sorted_ingredients + 1] = {
+      ingredient = ingredient,
+      percentage = percentage,
+    }
+  end
+  table.sort(sorted_ingredients, function(a, b) return a.percentage > b.percentage end)
+
+  -- Display each ingredient with a progress bar
+  local product = recipe_proto.products[1]
+  local prod_prefix = product.type == "fluid" and "fluid" or "item"
+
+  for _, entry in ipairs(sorted_ingredients) do
+    local ingredient = entry.ingredient
+    local percentage = entry.percentage
 
     local row = container.add({
       type = "flow",
@@ -114,9 +129,6 @@ local function build_ingredient_display(container, recipe_name, min_tick)
     btn.style.horizontal_align = "left"
 
     -- Progress bar
-    local ing_prefix = ingredient.type == "fluid" and "fluid" or "item"
-    local product = recipe_proto.products[1]
-    local prod_prefix = product.type == "fluid" and "fluid" or "item"
     local pct_str = string.format("%.1f%%", percentage)
     local tooltip = "[" .. prod_prefix .. "=" .. product.name .. "] was waiting for ["
         .. ing_prefix .. "=" .. ingredient.name .. "] " .. pct_str .. " of the time"
@@ -138,6 +150,17 @@ local function build_ingredient_display(container, recipe_name, min_tick)
       caption = string.format("%.1f%%", percentage),
     }).style.width = 60
   end
+end
+
+--- Compute min_tick for the current time slice.
+local function get_min_tick(state)
+  local slice = TIME_SLICES[state.time_slice_index]
+  local min_tick = 0
+  if slice.ticks > 0 then
+    min_tick = game.tick - slice.ticks
+    if min_tick < 0 then min_tick = 0 end
+  end
+  return min_tick
 end
 
 --- Build or rebuild the main window content.
@@ -261,8 +284,17 @@ local function build_main_window(player)
   -- Separator
   content.add({ type = "line" }).style.top_margin = 4
 
-  -- Recipe content area
-  local recipe_area = content.add({
+  -- Scrollable recipe content area
+  local scroll = content.add({
+    type = "scroll-pane",
+    name = "bottleneck-analyzer-scroll",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto",
+  })
+  scroll.style.maximal_height = 400
+  scroll.style.horizontally_stretchable = true
+
+  local recipe_area = scroll.add({
     type = "flow",
     name = "bottleneck-analyzer-recipe-area",
     direction = "vertical",
@@ -270,16 +302,8 @@ local function build_main_window(player)
   recipe_area.style.top_margin = 4
   recipe_area.style.horizontally_stretchable = true
 
-  -- Populate if item selected
-  if state.selected_item then
-    gui.update_recipe_area(player)
-  else
-    recipe_area.add({
-      type = "label",
-      caption = { "bottleneck-analyzer.select-item" },
-      style = "label",
-    })
-  end
+  -- Populate: item detail view or top bottlenecks overview
+  gui.update_recipe_area(player)
 end
 
 --- Update the chooser element to match the current selected_item state.
@@ -320,19 +344,22 @@ function gui.update_recipe_area(player)
   local main = player.gui.screen["bottleneck-analyzer-main"]
   if not main then return end
 
-  local recipe_area = main["bottleneck-analyzer-recipe-area"]
-  if not recipe_area then
-    -- Try to find it nested in the content frame
-    for _, child in pairs(main.children) do
-      if child.type == "frame" then
-        recipe_area = child["bottleneck-analyzer-recipe-area"]
-        if recipe_area then break end
+  -- Find recipe_area through the nesting: main > frame > scroll-pane > flow
+  local recipe_area
+  for _, child in pairs(main.children) do
+    if child.type == "frame" then
+      local scroll = child["bottleneck-analyzer-scroll"]
+      if scroll then
+        recipe_area = scroll["bottleneck-analyzer-recipe-area"]
       end
+      if recipe_area then break end
     end
   end
   if not recipe_area then return end
 
   recipe_area.clear()
+
+  local min_tick = get_min_tick(state)
 
   if not state.selected_item then
     recipe_area.add({
@@ -351,14 +378,6 @@ function gui.update_recipe_area(player)
       style = "label",
     })
     return
-  end
-
-  -- Calculate min_tick for time filter
-  local slice = TIME_SLICES[state.time_slice_index]
-  local min_tick = 0
-  if slice.ticks > 0 then
-    min_tick = game.tick - slice.ticks
-    if min_tick < 0 then min_tick = 0 end
   end
 
   -- Filter to only recipes that have data
@@ -486,6 +505,21 @@ function gui.on_click(event)
     if idx and idx >= 1 and idx <= #TIME_SLICES then
       local state = get_player_state(player.index)
       state.time_slice_index = idx
+      -- Update button highlights in-place
+      local parent = element.parent
+      if parent then
+        for i = 1, #TIME_SLICES do
+          local btn = parent["bottleneck-analyzer-time-" .. i]
+          if btn then
+            btn.style = (i == idx) and "menu_button_continue" or "menu_button"
+            btn.style.minimal_width = 30
+            btn.style.height = 24
+            btn.style.padding = {0, 4}
+            btn.style.font = "default-small"
+            btn.style.horizontal_align = "center"
+          end
+        end
+      end
       gui.update_recipe_area(player)
     end
     return
@@ -504,6 +538,7 @@ function gui.on_click(event)
     gui.update_recipe_area(player)
     return
   end
+
 end
 
 --- Handle item chooser changes.

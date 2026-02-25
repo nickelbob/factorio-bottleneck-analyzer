@@ -1,16 +1,23 @@
 local data_store = {}
 
-local MAX_BUFFER_SIZE = 500
+local MAX_BUFFER_SIZE = 100
 
 function data_store.init()
   if not storage.samples then
     storage.samples = {}
   end
+  -- Reset any buffers from a previous larger MAX_BUFFER_SIZE
+  for recipe_name, rb in pairs(storage.samples) do
+    if rb.head > MAX_BUFFER_SIZE or rb.count > MAX_BUFFER_SIZE then
+      storage.samples[recipe_name] = { buffer = {}, head = 1, count = 0 }
+    end
+  end
 end
 
---- Ensure a ring buffer exists for the given recipe.
+--- Ensure a ring buffer exists and is valid for the current MAX_BUFFER_SIZE.
 local function ensure_buffer(recipe_name)
-  if not storage.samples[recipe_name] then
+  local rb = storage.samples[recipe_name]
+  if not rb or rb.head > MAX_BUFFER_SIZE or rb.count > MAX_BUFFER_SIZE then
     storage.samples[recipe_name] = {
       buffer = {},
       head = 1,
@@ -52,6 +59,11 @@ function data_store.query(recipe_name, min_tick)
   if not rb or rb.count == 0 then
     return {}
   end
+  -- Reset oversized buffers from old MAX_BUFFER_SIZE
+  if rb.head > MAX_BUFFER_SIZE or rb.count > MAX_BUFFER_SIZE then
+    storage.samples[recipe_name] = { buffer = {}, head = 1, count = 0 }
+    return {}
+  end
 
   local results = {}
   -- Walk through valid entries in the ring buffer
@@ -88,6 +100,10 @@ function data_store.get_recipes_for_item(item_name)
     end
   end
   return recipes
+end
+
+function data_store.get_max_samples()
+  return MAX_BUFFER_SIZE
 end
 
 return data_store

@@ -98,4 +98,43 @@ remote.add_interface("bottleneck-analyzer", {
   profile_off = function() tracker.enable_profiling(false) end,
 })
 
+-- Debug command: /bottleneck-debug <recipe_name>
+commands.add_command("bottleneck-debug", "Dump sample ticks for a recipe", function(cmd)
+  local player = game.get_player(cmd.player_index)
+  if not player then return end
+  local recipe_name = cmd.parameter
+  if not recipe_name or recipe_name == "" then
+    -- List all recipes with data
+    local count = 0
+    for name, rb in pairs(storage.samples or {}) do
+      player.print(name .. ": " .. rb.count .. " samples, head=" .. rb.head)
+      count = count + 1
+      if count >= 20 then
+        player.print("... (truncated)")
+        break
+      end
+    end
+    player.print("game.tick = " .. game.tick)
+    return
+  end
+  local rb = storage.samples and storage.samples[recipe_name]
+  if not rb then
+    player.print("No data for recipe: " .. recipe_name)
+    return
+  end
+  player.print("Recipe: " .. recipe_name .. " count=" .. rb.count .. " head=" .. rb.head)
+  player.print("game.tick = " .. game.tick)
+  -- Show last 5 sample ticks
+  local shown = 0
+  for i = rb.count, math.max(1, rb.count - 4), -1 do
+    local idx = ((rb.head - 1 - (rb.count - i)) % 100) + 1
+    local s = rb.buffer[idx]
+    if s then
+      local age = game.tick - s.tick
+      player.print("  sample[" .. idx .. "] tick=" .. s.tick .. " (age=" .. age .. " ticks, " .. string.format("%.1f", age/60) .. "s) machines=" .. s.total_machines)
+    end
+    shown = shown + 1
+  end
+end)
+
 -- Settings changed (batch size adapts automatically, no re-registration needed)

@@ -44,7 +44,7 @@ local function destroy_main_window(player)
 end
 
 --- Build the ingredient bars for a given recipe within the time window.
-local function build_ingredient_display(container, recipe_name, min_tick)
+local function build_ingredient_display(container, recipe_name, min_tick, selected_item)
   container.clear()
 
   local samples = data_store.query(recipe_name, min_tick)
@@ -57,6 +57,13 @@ local function build_ingredient_display(container, recipe_name, min_tick)
     return
   end
 
+  local count_label = container.add({
+    type = "label",
+    caption = #samples .. " / " .. data_store.get_max_samples() .. " samples",
+    style = "subheader_caption_label",
+  })
+  count_label.style.bottom_margin = 4
+
   -- Get the recipe prototype for ingredient list
   local recipe_proto = prototypes.recipe[recipe_name]
   if not recipe_proto then return end
@@ -67,7 +74,7 @@ local function build_ingredient_display(container, recipe_name, min_tick)
 
   for _, sample in pairs(samples) do
     total_machine_samples = total_machine_samples + sample.total_machines
-    for ing_name, count in pairs(sample.waiting) do
+    for ing_name, count in pairs(sample.waiting or {}) do
       ingredient_waiting[ing_name] = (ingredient_waiting[ing_name] or 0) + count
     end
   end
@@ -93,9 +100,18 @@ local function build_ingredient_display(container, recipe_name, min_tick)
   end
   table.sort(sorted_ingredients, function(a, b) return a.percentage > b.percentage end)
 
-  -- Display each ingredient with a progress bar
-  local product = recipe_proto.products[1]
-  local prod_prefix = product.type == "fluid" and "fluid" or "item"
+  -- Use the selected item for the tooltip icon, falling back to first product
+  local prod_prefix = "item"
+  local prod_name = selected_item
+  if selected_item then
+    if prototypes.fluid[selected_item] then
+      prod_prefix = "fluid"
+    end
+  else
+    local product = recipe_proto.products[1]
+    prod_prefix = product.type == "fluid" and "fluid" or "item"
+    prod_name = product.name
+  end
 
   for _, entry in ipairs(sorted_ingredients) do
     local ingredient = entry.ingredient
@@ -130,7 +146,7 @@ local function build_ingredient_display(container, recipe_name, min_tick)
 
     -- Progress bar
     local pct_str = string.format("%.1f%%", percentage)
-    local tooltip = "[" .. prod_prefix .. "=" .. product.name .. "] was waiting for ["
+    local tooltip = "[" .. prod_prefix .. "=" .. prod_name .. "] was waiting for ["
         .. ing_prefix .. "=" .. ingredient.name .. "] " .. pct_str .. " of the time"
     local bar = row.add({
       type = "progressbar",
@@ -228,16 +244,15 @@ local function build_main_window(player)
     caption = { "bottleneck-analyzer.item-label" },
   })
 
-  -- Back button (only visible when there's history)
-  if #state.history > 0 then
-    local back_btn = item_row.add({
-      type = "sprite-button",
-      name = "bottleneck-analyzer-back",
-      sprite = "utility/left_arrow",
-      tooltip = { "bottleneck-analyzer.back-tooltip" },
-      style = "tool_button",
-    })
-  end
+  -- Back button (always created, visibility toggled dynamically)
+  local back_btn = item_row.add({
+    type = "sprite-button",
+    name = "bottleneck-analyzer-back",
+    sprite = "utility/left_arrow",
+    tooltip = { "bottleneck-analyzer.back-tooltip" },
+    style = "tool_button",
+  })
+  back_btn.visible = #state.history > 0
 
   local chooser = item_row.add({
     type = "choose-elem-button",
@@ -330,6 +345,11 @@ function gui.sync_chooser(player)
             else
               chooser.elem_value = nil
             end
+            -- Toggle back button visibility
+            local back_btn = sub["bottleneck-analyzer-back"]
+            if back_btn then
+              back_btn.visible = #state.history > 0
+            end
             return
           end
         end
@@ -417,7 +437,7 @@ function gui.update_recipe_area(player)
     })
     ingredient_container.style.top_margin = 8
 
-    build_ingredient_display(ingredient_container, recipe_name, min_tick)
+    build_ingredient_display(ingredient_container, recipe_name, min_tick, state.selected_item)
   else
     -- Multiple recipes with data, use tabbed pane
     local tabbed_pane = recipe_area.add({
@@ -442,7 +462,7 @@ function gui.update_recipe_area(player)
 
       tabbed_pane.add_tab(tab, tab_content)
 
-      build_ingredient_display(tab_content, recipe_name, min_tick)
+      build_ingredient_display(tab_content, recipe_name, min_tick, state.selected_item)
     end
 
     -- Select stored recipe tab if it exists, otherwise first

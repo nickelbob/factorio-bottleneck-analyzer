@@ -322,7 +322,8 @@ function tracker.sample_chunk(tick)
     -- Sweep complete: write aggregated data to ring buffers
     if profiling then p_datastore_sweep.restart() end
     for recipe_name, agg in pairs(current_aggregation) do
-      data_store.record_sample(recipe_name, tick, agg.total, agg.waiting)
+      local waiting = next(agg.waiting) and agg.waiting or nil
+      data_store.record_sample(recipe_name, tick, agg.total, waiting)
     end
     if profiling then p_datastore_sweep.stop() end
 

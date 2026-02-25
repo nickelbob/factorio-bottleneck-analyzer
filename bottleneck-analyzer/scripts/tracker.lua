@@ -8,41 +8,112 @@ local TRACKED_TYPES = {
   ["rocket-silo"] = true,
 }
 
---- Add an entity to tracking.
+local MAX_BATCH_SIZE = 500
+local RECHECK_COUNT = 50  -- random recipe cache re-checks per sweep
+
+-- Transient state (not saved, rebuilt each sweep)
+local current_aggregation = {}
+
+------------------------------------------------------------------------
+-- Recipe helpers
+------------------------------------------------------------------------
+
+-- Safe version that doesn't error on invalid entities
+local function get_entity_recipe_safe(entity)
+  if entity.type == "furnace" then
+    local prev = entity.previous_recipe
+    if prev then return prev.recipe end
+    return entity.get_recipe()
+  end
+  return entity.get_recipe()
+end
+
+------------------------------------------------------------------------
+-- Entity list management
+------------------------------------------------------------------------
+
+function tracker.init_storage()
+  if not storage.tracked_entities then storage.tracked_entities = {} end
+  if not storage.entity_list then storage.entity_list = {} end
+  if not storage.entity_list_index then storage.entity_list_index = {} end
+  if not storage.recipe_cache then storage.recipe_cache = {} end
+  if not storage.sample_cursor then storage.sample_cursor = 1 end
+end
+
+local function add_to_entity_list(unit_number)
+  local list = storage.entity_list
+  local idx = #list + 1
+  list[idx] = unit_number
+  storage.entity_list_index[unit_number] = idx
+end
+
+local function remove_from_entity_list(unit_number)
+  local index = storage.entity_list_index[unit_number]
+  if not index then return end
+  local list = storage.entity_list
+  local last = #list
+  if index ~= last then
+    -- Swap with last element
+    local last_un = list[last]
+    list[index] = last_un
+    storage.entity_list_index[last_un] = index
+  end
+  list[last] = nil
+  storage.entity_list_index[unit_number] = nil
+end
+
 function tracker.track_entity(entity)
   if not entity or not entity.valid then return end
   if not TRACKED_TYPES[entity.type] then return end
-  storage.tracked_entities[entity.unit_number] = entity
+  local un = entity.unit_number
+  if storage.tracked_entities[un] then return end -- already tracked
+  storage.tracked_entities[un] = entity
+  add_to_entity_list(un)
+  -- Cache recipe
+  local recipe = get_entity_recipe_safe(entity)
+  storage.recipe_cache[un] = recipe and recipe.name or false
 end
 
---- Remove an entity from tracking.
 function tracker.untrack_entity(entity)
-  if not entity or not entity.valid then return end
-  storage.tracked_entities[entity.unit_number] = nil
+  if not entity then return end
+  local un = entity.unit_number
+  if not un then return end
+  storage.tracked_entities[un] = nil
+  remove_from_entity_list(un)
+  storage.recipe_cache[un] = nil
 end
 
---- Scan all surfaces for existing crafting machines and track them.
 function tracker.scan_surfaces()
   storage.tracked_entities = {}
+  storage.entity_list = {}
+  storage.entity_list_index = {}
+  storage.recipe_cache = {}
+  storage.sample_cursor = 1
   for _, surface in pairs(game.surfaces) do
     for etype, _ in pairs(TRACKED_TYPES) do
       local entities = surface.find_entities_filtered({ type = etype })
       for _, entity in pairs(entities) do
         if entity.valid and entity.unit_number then
-          storage.tracked_entities[entity.unit_number] = entity
+          local un = entity.unit_number
+          storage.tracked_entities[un] = entity
+          add_to_entity_list(un)
+          local recipe = get_entity_recipe_safe(entity)
+          storage.recipe_cache[un] = recipe and recipe.name or false
         end
       end
     end
   end
 end
 
---- Determine which ingredients are short for a machine.
--- Returns a table of ingredient names that are below required amounts, or nil if none.
-local function get_short_ingredients(entity, recipe)
+------------------------------------------------------------------------
+-- Ingredient checking
+------------------------------------------------------------------------
+
+local function get_short_ingredients(entity, recipe_proto)
   local short = {}
   local found_any = false
 
-  for _, ingredient in pairs(recipe.ingredients) do
+  for _, ingredient in pairs(recipe_proto.ingredients) do
     if ingredient.type == "item" then
       local input_inv = entity.get_inventory(defines.inventory.crafter_input)
       if input_inv then
@@ -61,107 +132,98 @@ local function get_short_ingredients(entity, recipe)
     end
   end
 
-  if found_any then
-    return short
-  end
-  return nil
+  return found_any and short or nil
 end
 
---- Get the recipe for an entity, handling furnaces specially.
-local function get_entity_recipe(entity)
-  if entity.type == "furnace" then
-    local prev = entity.previous_recipe
-    if prev then
-      return prev.recipe
+------------------------------------------------------------------------
+-- Chunked sampling
+------------------------------------------------------------------------
+
+local function get_batch_size()
+  local rate_seconds = settings.global["bottleneck-analyzer-sample-rate"].value
+  local total_ticks = math.floor(rate_seconds * 60)
+  if total_ticks < 1 then total_ticks = 1 end
+  local entity_count = #storage.entity_list
+  if entity_count == 0 then return 0 end
+  local batch = math.ceil(entity_count / total_ticks)
+  if batch > MAX_BATCH_SIZE then batch = MAX_BATCH_SIZE end
+  if batch < 1 then batch = 1 end
+  return batch
+end
+
+local function do_staleness_recheck()
+  local list = storage.entity_list
+  local count = #list
+  if count == 0 then return end
+  local checks = math.min(RECHECK_COUNT, count)
+  for _ = 1, checks do
+    local idx = math.random(1, count)
+    local un = list[idx]
+    local entity = storage.tracked_entities[un]
+    if entity and entity.valid then
+      local recipe = get_entity_recipe_safe(entity)
+      storage.recipe_cache[un] = recipe and recipe.name or false
     end
-    return entity.get_recipe()
-  end
-  return entity.get_recipe()
-end
-
--- Profiling state
-local profile_enabled = false
-local profile_count = 0
-local PROFILE_INTERVAL = 10  -- log every Nth sample
-
-function tracker.enable_profiling(enabled)
-  profile_enabled = enabled
-  profile_count = 0
-  if enabled then
-    log("Bottleneck Analyzer: profiling ENABLED (logging every " .. PROFILE_INTERVAL .. " samples)")
-  else
-    log("Bottleneck Analyzer: profiling DISABLED")
   end
 end
 
---- Run one sampling pass across all tracked entities.
-function tracker.sample(tick)
-  local profiling = profile_enabled
-  local p_total, p_validity, p_recipe, p_status, p_ingredients, p_datastore
-  local entity_count = 0
-  local invalid_count = 0
-  local waiting_count = 0
+function tracker.sample_chunk(tick)
+  local list = storage.entity_list
+  local total = #list
+  if total == 0 then return end
 
-  if profiling then
-    p_total = game.create_profiler()
-    p_validity = game.create_profiler()
-    p_validity.stop()
-    p_recipe = game.create_profiler()
-    p_recipe.stop()
-    p_status = game.create_profiler()
-    p_status.stop()
-    p_ingredients = game.create_profiler()
-    p_ingredients.stop()
-    p_datastore = game.create_profiler()
-    p_datastore.stop()
+  local cursor = storage.sample_cursor
+
+  -- Start of new sweep?
+  if cursor == 1 then
+    current_aggregation = {}
   end
 
-  -- Aggregate data: recipe_name -> { total = N, waiting = { [ingredient] = count } }
-  local aggregated = {}
+  local batch_size = get_batch_size()
+  local end_idx = cursor + batch_size - 1
+  if end_idx > total then end_idx = total end
 
-  for unit_number, entity in pairs(storage.tracked_entities) do
-    entity_count = entity_count + 1
+  local to_remove = {}
 
-    if profiling then p_validity.restart() end
-    local valid = entity.valid
-    if profiling then p_validity.stop() end
+  for i = cursor, end_idx do
+    local un = list[i]
+    local entity = storage.tracked_entities[un]
+
+    local valid = entity and entity.valid
 
     if not valid then
-      storage.tracked_entities[unit_number] = nil
-      invalid_count = invalid_count + 1
+      to_remove[#to_remove + 1] = un
     else
-      if profiling then p_recipe.restart() end
-      local recipe = get_entity_recipe(entity)
-      if profiling then p_recipe.stop() end
+      -- Use cached recipe
+      local recipe_name = storage.recipe_cache[un]
+      if recipe_name == nil then
+        -- Cache miss: look up and cache
+        local recipe = get_entity_recipe_safe(entity)
+        recipe_name = recipe and recipe.name or false
+        storage.recipe_cache[un] = recipe_name
+      end
 
-      if recipe then
-        local recipe_name = recipe.name
-        if not aggregated[recipe_name] then
-          aggregated[recipe_name] = {
-            total = 0,
-            waiting = {},
-            recipe = recipe,
-          }
-        end
-        local agg = aggregated[recipe_name]
-        agg.total = agg.total + 1
+      if recipe_name then
+        local recipe_proto = prototypes.recipe[recipe_name]
+        if recipe_proto then
+          if not current_aggregation[recipe_name] then
+            current_aggregation[recipe_name] = { total = 0, waiting = {} }
+          end
+          local agg = current_aggregation[recipe_name]
+          agg.total = agg.total + 1
 
-        if profiling then p_status.restart() end
-        local status = entity.status
-        if profiling then p_status.stop() end
+          local status = entity.status
 
-        if status == defines.entity_status.item_ingredient_shortage
-            or status == defines.entity_status.fluid_ingredient_shortage
-            or status == defines.entity_status.no_ingredients then
-          waiting_count = waiting_count + 1
+          if status == defines.entity_status.item_ingredient_shortage
+              or status == defines.entity_status.fluid_ingredient_shortage
+              or status == defines.entity_status.no_ingredients then
 
-          if profiling then p_ingredients.restart() end
-          local short = get_short_ingredients(entity, recipe)
-          if profiling then p_ingredients.stop() end
+            local short = get_short_ingredients(entity, recipe_proto)
 
-          if short then
-            for ingredient_name, _ in pairs(short) do
-              agg.waiting[ingredient_name] = (agg.waiting[ingredient_name] or 0) + 1
+            if short then
+              for ingredient_name, _ in pairs(short) do
+                agg.waiting[ingredient_name] = (agg.waiting[ingredient_name] or 0) + 1
+              end
             end
           end
         end
@@ -169,29 +231,30 @@ function tracker.sample(tick)
     end
   end
 
-  -- Write aggregated samples into ring buffers
-  if profiling then p_datastore.restart() end
-  for recipe_name, agg in pairs(aggregated) do
-    data_store.record_sample(recipe_name, tick, agg.total, agg.waiting)
+  -- Clean up invalid entities (after iteration to avoid messing with indices)
+  for _, un in ipairs(to_remove) do
+    storage.tracked_entities[un] = nil
+    remove_from_entity_list(un)
+    storage.recipe_cache[un] = nil
   end
-  if profiling then p_datastore.stop() end
 
-  if profiling then
-    p_total.stop()
-    profile_count = profile_count + 1
-    if profile_count % PROFILE_INTERVAL == 0 then
-      local header = "=== Bottleneck Analyzer Profile (tick " .. tick .. ") ===\n"
-          .. "  Entities: " .. entity_count .. " tracked, " .. invalid_count .. " invalid, " .. waiting_count .. " waiting\n"
-      helpers.write_file("bottleneck-analyzer-profile.txt", header, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  TOTAL:        ", p_total, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  validity:     ", p_validity, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  get_recipe:   ", p_recipe, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  status:       ", p_status, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  ingredients:  ", p_ingredients, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  data_store:   ", p_datastore, "\n"}, true)
-      helpers.write_file("bottleneck-analyzer-profile.txt", "================================================\n", true)
+  -- Advance cursor
+  cursor = end_idx + 1
+  if cursor > #storage.entity_list then
+    -- Sweep complete: write aggregated data to ring buffers
+    for recipe_name, agg in pairs(current_aggregation) do
+      data_store.record_sample(recipe_name, tick, agg.total, agg.waiting)
     end
+
+    -- Staleness recheck
+    do_staleness_recheck()
+
+    -- Reset for next sweep
+    current_aggregation = {}
+    cursor = 1
   end
+
+  storage.sample_cursor = cursor
 end
 
 --- Get the sample interval in ticks from mod settings.

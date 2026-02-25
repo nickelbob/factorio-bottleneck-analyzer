@@ -9,14 +9,11 @@ local ENTITY_FILTERS = {
   { filter = "type", type = "rocket-silo" },
 }
 
---- Register the nth_tick handler based on current settings.
+--- Register the per-tick handler for chunked sampling.
 local function register_nth_tick()
-  -- Clear any existing nth_tick handlers
   script.on_nth_tick(nil)
-
-  local ticks = tracker.get_sample_ticks()
-  script.on_nth_tick(ticks, function(event)
-    tracker.sample(event.tick)
+  script.on_nth_tick(1, function(event)
+    tracker.sample_chunk(event.tick)
   end)
 end
 
@@ -24,11 +21,7 @@ end
 local function full_init()
   data_store.init()
   gui.init()
-
-  if not storage.tracked_entities then
-    storage.tracked_entities = {}
-  end
-
+  tracker.init_storage()
   tracker.scan_surfaces()
   register_nth_tick()
 end
@@ -90,16 +83,4 @@ end)
 script.on_event(defines.events.on_gui_closed, function(event)
   gui.on_closed(event)
 end)
-
--- Remote interface for profiling
-remote.add_interface("bottleneck-analyzer", {
-  profile_on = function() tracker.enable_profiling(true) end,
-  profile_off = function() tracker.enable_profiling(false) end,
-})
-
--- Settings changed
-script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
-  if event.setting == "bottleneck-analyzer-sample-rate" then
-    register_nth_tick()
-  end
-end)
+-- Settings changed (batch size adapts automatically, no re-registration needed)

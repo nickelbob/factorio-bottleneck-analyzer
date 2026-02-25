@@ -233,7 +233,7 @@ local function build_main_window(player)
     local back_btn = item_row.add({
       type = "sprite-button",
       name = "bottleneck-analyzer-back",
-      sprite = "utility/reset",
+      sprite = "utility/left_arrow",
       tooltip = { "bottleneck-analyzer.back-tooltip" },
       style = "tool_button",
     })

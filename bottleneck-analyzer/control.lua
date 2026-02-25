@@ -91,6 +91,12 @@ script.on_event(defines.events.on_gui_closed, function(event)
   gui.on_closed(event)
 end)
 
+-- Remote interface for profiling
+remote.add_interface("bottleneck-analyzer", {
+  profile_on = function() tracker.enable_profiling(true) end,
+  profile_off = function() tracker.enable_profiling(false) end,
+})
+
 -- Settings changed
 script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
   if event.setting == "bottleneck-analyzer-sample-rate" then

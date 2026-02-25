@@ -1,6 +1,6 @@
 {
   "name": "bottleneck-analyzer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "title": "Bottleneck Analyzer",
   "author": "You",
   "description": "Tracks which ingredients are causing production delays across your factory. Samples all crafting machines, records missing ingredients, and presents aggregate bottleneck statistics with time-slice filtering.",

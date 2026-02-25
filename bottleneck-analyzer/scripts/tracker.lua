@@ -13,12 +13,23 @@ local RECHECK_COUNT = 50  -- random recipe cache re-checks per sweep
 
 -- Transient state (not saved, rebuilt each sweep)
 local current_aggregation = {}
+local sweep_entity_count = 0
+local sweep_invalid_count = 0
+local sweep_waiting_count = 0
+local sweep_cache_hits = 0
+local sweep_cache_misses = 0
+local sweep_start_tick = 0
+
+-- Profiling
+local profile_enabled = true
+local profile_count = 0
+local PROFILE_INTERVAL = 5
+local p_total_sweep, p_validity_sweep, p_status_sweep, p_ingredients_sweep, p_datastore_sweep
 
 ------------------------------------------------------------------------
 -- Recipe helpers
 ------------------------------------------------------------------------
 
--- Safe version that doesn't error on invalid entities
 local function get_entity_recipe_safe(entity)
   if entity.type == "furnace" then
     local prev = entity.previous_recipe
@@ -53,7 +64,6 @@ local function remove_from_entity_list(unit_number)
   local list = storage.entity_list
   local last = #list
   if index ~= last then
-    -- Swap with last element
     local last_un = list[last]
     list[index] = last_un
     storage.entity_list_index[last_un] = index
@@ -66,10 +76,9 @@ function tracker.track_entity(entity)
   if not entity or not entity.valid then return end
   if not TRACKED_TYPES[entity.type] then return end
   local un = entity.unit_number
-  if storage.tracked_entities[un] then return end -- already tracked
+  if storage.tracked_entities[un] then return end
   storage.tracked_entities[un] = entity
   add_to_entity_list(un)
-  -- Cache recipe
   local recipe = get_entity_recipe_safe(entity)
   storage.recipe_cache[un] = recipe and recipe.name or false
 end
@@ -136,6 +145,51 @@ local function get_short_ingredients(entity, recipe_proto)
 end
 
 ------------------------------------------------------------------------
+-- Profiling
+------------------------------------------------------------------------
+
+function tracker.enable_profiling(enabled)
+  profile_enabled = enabled
+  profile_count = 0
+  log("Bottleneck Analyzer: profiling " .. (enabled and "ENABLED" or "DISABLED"))
+end
+
+local function reset_sweep_profilers()
+  if not profile_enabled then return end
+  p_total_sweep = game.create_profiler()
+  p_validity_sweep = game.create_profiler()
+  p_validity_sweep.stop()
+  p_status_sweep = game.create_profiler()
+  p_status_sweep.stop()
+  p_ingredients_sweep = game.create_profiler()
+  p_ingredients_sweep.stop()
+  p_datastore_sweep = game.create_profiler()
+  p_datastore_sweep.stop()
+end
+
+local function write_sweep_profile(tick)
+  if not profile_enabled then return end
+  p_total_sweep.stop()
+  profile_count = profile_count + 1
+  if profile_count % PROFILE_INTERVAL ~= 0 then return end
+
+  local header = "=== Bottleneck Analyzer Sweep (tick " .. tick .. ") ===\n"
+      .. "  Entities: " .. sweep_entity_count .. " processed, "
+      .. sweep_invalid_count .. " invalid, "
+      .. sweep_waiting_count .. " waiting\n"
+      .. "  Cache: " .. sweep_cache_hits .. " hits, "
+      .. sweep_cache_misses .. " misses\n"
+      .. "  Sweep duration: " .. (tick - sweep_start_tick) .. " ticks\n"
+  helpers.write_file("bottleneck-analyzer-profile.txt", header, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  TOTAL:        ", p_total_sweep, "\n"}, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  validity:     ", p_validity_sweep, "\n"}, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  status:       ", p_status_sweep, "\n"}, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  ingredients:  ", p_ingredients_sweep, "\n"}, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  data_store:   ", p_datastore_sweep, "\n"}, true)
+  helpers.write_file("bottleneck-analyzer-profile.txt", "================================================\n", true)
+end
+
+------------------------------------------------------------------------
 -- Chunked sampling
 ------------------------------------------------------------------------
 
@@ -168,16 +222,28 @@ local function do_staleness_recheck()
 end
 
 function tracker.sample_chunk(tick)
+  if not settings.global["bottleneck-analyzer-enabled"].value then return end
+
   local list = storage.entity_list
   local total = #list
   if total == 0 then return end
 
   local cursor = storage.sample_cursor
+  local profiling = profile_enabled
 
   -- Start of new sweep?
   if cursor == 1 then
     current_aggregation = {}
+    sweep_entity_count = 0
+    sweep_invalid_count = 0
+    sweep_waiting_count = 0
+    sweep_cache_hits = 0
+    sweep_cache_misses = 0
+    sweep_start_tick = tick
+    if profiling then reset_sweep_profilers() end
   end
+
+  if profiling then p_total_sweep.restart() end
 
   local batch_size = get_batch_size()
   local end_idx = cursor + batch_size - 1
@@ -188,19 +254,24 @@ function tracker.sample_chunk(tick)
   for i = cursor, end_idx do
     local un = list[i]
     local entity = storage.tracked_entities[un]
+    sweep_entity_count = sweep_entity_count + 1
 
+    if profiling then p_validity_sweep.restart() end
     local valid = entity and entity.valid
+    if profiling then p_validity_sweep.stop() end
 
     if not valid then
       to_remove[#to_remove + 1] = un
+      sweep_invalid_count = sweep_invalid_count + 1
     else
-      -- Use cached recipe
       local recipe_name = storage.recipe_cache[un]
       if recipe_name == nil then
-        -- Cache miss: look up and cache
         local recipe = get_entity_recipe_safe(entity)
         recipe_name = recipe and recipe.name or false
         storage.recipe_cache[un] = recipe_name
+        sweep_cache_misses = sweep_cache_misses + 1
+      else
+        sweep_cache_hits = sweep_cache_hits + 1
       end
 
       if recipe_name then
@@ -212,13 +283,18 @@ function tracker.sample_chunk(tick)
           local agg = current_aggregation[recipe_name]
           agg.total = agg.total + 1
 
+          if profiling then p_status_sweep.restart() end
           local status = entity.status
+          if profiling then p_status_sweep.stop() end
 
           if status == defines.entity_status.item_ingredient_shortage
               or status == defines.entity_status.fluid_ingredient_shortage
               or status == defines.entity_status.no_ingredients then
+            sweep_waiting_count = sweep_waiting_count + 1
 
+            if profiling then p_ingredients_sweep.restart() end
             local short = get_short_ingredients(entity, recipe_proto)
+            if profiling then p_ingredients_sweep.stop() end
 
             if short then
               for ingredient_name, _ in pairs(short) do
@@ -231,6 +307,8 @@ function tracker.sample_chunk(tick)
     end
   end
 
+  if profiling then p_total_sweep.stop() end
+
   -- Clean up invalid entities (after iteration to avoid messing with indices)
   for _, un in ipairs(to_remove) do
     storage.tracked_entities[un] = nil
@@ -242,9 +320,13 @@ function tracker.sample_chunk(tick)
   cursor = end_idx + 1
   if cursor > #storage.entity_list then
     -- Sweep complete: write aggregated data to ring buffers
+    if profiling then p_datastore_sweep.restart() end
     for recipe_name, agg in pairs(current_aggregation) do
       data_store.record_sample(recipe_name, tick, agg.total, agg.waiting)
     end
+    if profiling then p_datastore_sweep.stop() end
+
+    write_sweep_profile(tick)
 
     -- Staleness recheck
     do_staleness_recheck()

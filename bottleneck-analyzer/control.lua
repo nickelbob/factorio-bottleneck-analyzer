@@ -33,8 +33,17 @@ end)
 
 -- on_configuration_changed: mod updated or game version changed
 script.on_configuration_changed(function(data)
-  full_init()
+  local mod_changes = data.mod_changes and data.mod_changes["bottleneck-analyzer"]
+  if mod_changes and mod_changes.old_version then
+    -- Force sample rate to 30s for users upgrading from old versions with bad defaults
+    local current_rate = settings.global["bottleneck-analyzer-sample-rate"].value
+    if current_rate < 10 then
+      settings.global["bottleneck-analyzer-sample-rate"] = { value = 30.0 }
+      log("Bottleneck Analyzer: sample rate was " .. current_rate .. "s, overridden to 30s for performance")
+    end
+  end
 
+  full_init()
 end)
 
 -- Entity build events
@@ -83,4 +92,10 @@ end)
 script.on_event(defines.events.on_gui_closed, function(event)
   gui.on_closed(event)
 end)
+-- Remote interface for profiling
+remote.add_interface("bottleneck-analyzer", {
+  profile_on = function() tracker.enable_profiling(true) end,
+  profile_off = function() tracker.enable_profiling(false) end,
+})
+
 -- Settings changed (batch size adapts automatically, no re-registration needed)

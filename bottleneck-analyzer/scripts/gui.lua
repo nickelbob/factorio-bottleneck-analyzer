@@ -2,6 +2,14 @@ local data_store = require("scripts.data-store")
 
 local gui = {}
 
+--- Callback for when item selection changes. Set by control.lua to avoid circular deps.
+--- @type fun(player_index: uint, item_name: string)|nil
+gui.on_item_selected_callback = nil
+
+--- Callback for when time slice changes. Set by control.lua to avoid circular deps.
+--- @type fun(player_index: uint, slice_label: string)|nil
+gui.on_time_slice_changed_callback = nil
+
 local TIME_SLICES = {
   { label = "5m",  ticks = 5 * 60 * 60 },
   { label = "10m", ticks = 10 * 60 * 60 },
@@ -553,6 +561,9 @@ function gui.on_click(event)
         end
       end
       gui.update_recipe_area(player)
+      if gui.on_time_slice_changed_callback then
+        gui.on_time_slice_changed_callback(player.index, TIME_SLICES[idx].label)
+      end
     end
     return
   end
@@ -568,6 +579,9 @@ function gui.on_click(event)
     state.selected_recipe = nil
     gui.sync_chooser(player)
     gui.update_recipe_area(player)
+    if gui.on_item_selected_callback then
+      gui.on_item_selected_callback(player.index, ing_name)
+    end
     return
   end
 
@@ -600,6 +614,9 @@ function gui.on_elem_changed(event)
   state.history = {}
 
   gui.update_recipe_area(player)
+  if state.selected_item and gui.on_item_selected_callback then
+    gui.on_item_selected_callback(player.index, state.selected_item)
+  end
 end
 
 --- Handle tab changes in the recipe tabbed pane.
@@ -636,6 +653,44 @@ function gui.on_tab_changed(event)
       state.selected_recipe = recipes_with_data[idx]
     end
   end
+end
+
+--- Programmatically select an item (used by remote interface).
+-- Opens the GUI if closed, sets the item, clears history, and refreshes.
+function gui.select_item(player, item_name)
+  local state = get_player_state(player.index)
+
+  state.selected_item = item_name
+  state.selected_recipe = nil
+  state.history = {}
+
+  if not state.open then
+    build_main_window(player)
+    state.open = true
+  else
+    gui.sync_chooser(player)
+    gui.update_recipe_area(player)
+  end
+end
+
+--- Programmatically select a time slice by label (used by remote interface).
+-- Updates the time slice and refreshes the display if the GUI is open.
+function gui.select_time_slice(player, slice_label)
+  local state = get_player_state(player.index)
+
+  for i, slice in ipairs(TIME_SLICES) do
+    if slice.label == slice_label then
+      state.time_slice_index = i
+      if state.open then
+        build_main_window(player)
+      end
+      if gui.on_time_slice_changed_callback then
+        gui.on_time_slice_changed_callback(player.index, slice_label)
+      end
+      return true
+    end
+  end
+  return false
 end
 
 --- Handle GUI closed (Esc key).

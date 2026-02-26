@@ -1,6 +1,11 @@
 local tracker = require("scripts.tracker")
 local data_store = require("scripts.data-store")
 local gui = require("scripts.gui")
+local remote_hooks = require("scripts.remote-interface")
+
+-- Wire up event broadcasting: when player selects an item in our GUI, raise the custom event
+gui.on_item_selected_callback = remote_hooks.raise_item_selected
+gui.on_time_slice_changed_callback = remote_hooks.raise_time_slice_changed
 
 -- Entity type filters for build/destroy events
 local ENTITY_FILTERS = {
@@ -24,6 +29,12 @@ end)
 -- on_init: first time mod is loaded
 script.on_init(function()
   full_init()
+  remote_hooks.subscribe_to_events()
+end)
+
+-- on_load: subscribes to events (no game state changes allowed)
+script.on_load(function()
+  remote_hooks.subscribe_to_events()
 end)
 
 -- on_configuration_changed: mod updated or game version changed
@@ -38,6 +49,7 @@ script.on_configuration_changed(function(data)
   end
 
   full_init()
+  remote_hooks.subscribe_to_events()
 end)
 
 -- Runtime setting changes

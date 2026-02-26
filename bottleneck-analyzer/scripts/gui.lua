@@ -179,6 +179,9 @@ end
 
 --- Compute min_tick for the current time slice.
 local function get_min_tick(state)
+  if state.time_slice_index > #TIME_SLICES then
+    state.time_slice_index = 1
+  end
   local slice = TIME_SLICES[state.time_slice_index]
   local min_tick = 0
   if slice.ticks > 0 then

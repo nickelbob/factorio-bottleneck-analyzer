@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bottleneck Analyzer - Recipe Graph</title>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    #header {
+      padding: 12px 20px;
+      background: #16213e;
+      border-bottom: 1px solid #333;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    h1 { color: #ff9800; font-size: 1.2em; white-space: nowrap; }
+    #error-box {
+      color: #e57373; background: #2a1a1a; padding: 8px 12px;
+      border-radius: 4px; margin: 8px 20px; display: none;
+      white-space: pre-wrap; font-family: monospace; font-size: 0.85em;
+    }
+
+    #drop-zone {
+      border: 2px dashed #555;
+      border-radius: 8px;
+      padding: 60px 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      margin: 40px auto;
+      max-width: 600px;
+    }
+    #drop-zone:hover, #drop-zone.dragover { border-color: #ff9800; }
+    #drop-zone input { display: none; }
+    #drop-zone code { color: #ff9800; }
+
+    #main { display: none; flex: 1; overflow: hidden; }
+
+    button {
+      background: #ff9800; color: #000; border: none;
+      padding: 5px 12px; border-radius: 4px; cursor: pointer;
+      font-weight: bold; font-size: 0.85em;
+      width: 100%;
+      text-align: left;
+    }
+    button:hover { background: #ffb74d; }
+    button.secondary { background: #444; color: #e0e0e0; }
+    button.secondary:hover { background: #555; }
+    button.active { background: #ff9800; color: #000; }
+
+    #content-area { display: flex; flex: 1; overflow: hidden; }
+
+    /* Sidebar */
+    #sidebar {
+      width: 280px;
+      background: #16213e;
+      border-right: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    #sidebar-header { padding: 8px 10px; border-bottom: 1px solid #333; }
+    #recipe-search {
+      width: 100%;
+      background: #1a1a2e; color: #e0e0e0; border: 1px solid #555;
+      padding: 6px 8px; border-radius: 4px; font-size: 0.9em;
+    }
+    #recipe-search:focus { outline: none; border-color: #ff9800; }
+    #sidebar-buttons {
+      padding: 6px 10px;
+      border-bottom: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #stats { font-size: 0.8em; color: #888; padding: 4px 10px; border-bottom: 1px solid #333; }
+    #sidebar-tabs {
+      display: flex; border-bottom: 1px solid #333;
+    }
+    .sidebar-tab {
+      flex: 1; padding: 6px 4px; text-align: center; font-size: 0.8em;
+      cursor: pointer; color: #888; border-bottom: 2px solid transparent;
+    }
+    .sidebar-tab.active { color: #ff9800; border-bottom-color: #ff9800; }
+    .sidebar-tab:hover { color: #ccc; }
+    #recipe-list {
+      flex: 1; overflow-y: auto; padding: 4px 0;
+    }
+    .recipe-item {
+      padding: 5px 10px; cursor: pointer; font-size: 0.85em;
+      display: flex; justify-content: space-between; align-items: center;
+      border-left: 3px solid transparent;
+    }
+    .recipe-item:hover { background: #1a1a2e; }
+    .recipe-item.selected { background: #1a1a2e; border-left-color: #ff9800; }
+    .recipe-item .ri-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .recipe-item .ri-badge {
+      font-size: 0.75em; padding: 1px 5px; border-radius: 3px;
+      margin-left: 6px; white-space: nowrap;
+    }
+    .badge-red { background: #e5737344; color: #e57373; }
+    .badge-yellow { background: #fff17644; color: #fff176; }
+    .badge-green { background: #81c78444; color: #81c784; }
+    .badge-none { background: #55555544; color: #888; }
+
+    #graph-container { flex: 1; position: relative; }
+    #cy { width: 100%; height: 100%; }
+
+    #detail-panel {
+      position: absolute; top: 10px; right: 10px;
+      background: #16213e; border: 1px solid #444; border-radius: 6px;
+      padding: 12px 16px; min-width: 260px; max-width: 360px;
+      display: none; z-index: 10; font-size: 0.85em;
+      max-height: calc(100% - 20px); overflow-y: auto;
+    }
+    #detail-panel h3 { color: #ff9800; margin-bottom: 8px; font-size: 1.1em; word-break: break-all; }
+    #detail-panel .section { margin-bottom: 8px; }
+    #detail-panel .section-title { color: #aaa; font-size: 0.8em; margin-bottom: 2px; }
+    .ing-row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .ing-name { color: #ccc; }
+    .ing-pct { font-weight: bold; }
+    .pct-green { color: #81c784; }
+    .pct-yellow { color: #fff176; }
+    .pct-red { color: #e57373; }
+    .pct-none { color: #666; }
+    .detail-link {
+      color: #64b5f6; cursor: pointer; text-decoration: underline;
+      font-size: 0.9em;
+    }
+    .detail-link:hover { color: #90caf9; }
+
+    #legend {
+      position: absolute; bottom: 10px; left: 10px;
+      background: #16213ecc; border-radius: 4px; padding: 8px 12px;
+      font-size: 0.8em; z-index: 10;
+    }
+    #legend span { margin-right: 12px; }
+    .legend-dot {
+      display: inline-block; width: 10px; height: 10px;
+      border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+
+    #hint {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: #555; font-size: 1.1em; text-align: center; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>Bottleneck Analyzer - Recipe Graph</h1>
+  </div>
+  <div id="error-box"></div>
+
+  <div id="drop-zone" tabindex="0">
+    <p>Drop <code>bottleneck-analyzer-graph.json</code> here or click to select</p>
+    <p style="font-size:0.8em;color:#888;margin-top:8px">
+      Export with <code>/bottleneck-graph</code> in Factorio.
+      Found in: <code>%APPDATA%\Factorio\script-output\</code>
+    </p>
+    <input type="file" id="file-input" accept=".json">
+  </div>
+
+  <div id="main">
+    <div id="content-area">
+      <div id="sidebar">
+        <div id="sidebar-header">
+          <input type="text" id="recipe-search" placeholder="Search recipes...">
+        </div>
+        <div id="sidebar-buttons">
+          <button onclick="loadAllBottlenecks()">Show All Bottlenecked</button>
+          <button class="secondary" onclick="expandAll()">Expand All Visible</button>
+          <button class="secondary" id="btn-bottleneck-edges" onclick="toggleBottleneckEdges()">Bottleneck Edges Only</button>
+          <button class="secondary" onclick="relayout()">Re-layout</button>
+          <button class="secondary" onclick="clearGraph()">Clear Graph</button>
+        </div>
+        <div id="stats"></div>
+        <div id="sidebar-tabs">
+          <div class="sidebar-tab active" data-tab="bottlenecked" onclick="switchTab(this)">Bottlenecked</div>
+          <div class="sidebar-tab" data-tab="all" onclick="switchTab(this)">All</div>
+        </div>
+        <div id="recipe-list"></div>
+      </div>
+      <div id="graph-container">
+        <div id="cy"></div>
+        <div id="hint">Select a recipe from the sidebar to start exploring</div>
+        <div id="detail-panel">
+          <h3 id="detail-name"></h3>
+          <div id="detail-body"></div>
+        </div>
+        <div id="legend">
+          <span><span class="legend-dot" style="background:#81c784"></span>No/low bottleneck</span>
+          <span><span class="legend-dot" style="background:#fff176"></span>20-50%</span>
+          <span><span class="legend-dot" style="background:#e57373"></span>&gt;50%</span>
+          <span><span class="legend-dot" style="background:#4a7a8a"></span>No data</span>
+          <span style="color:#888">| Double-click to expand | Drag to move</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let cy = null;
+    let graphData = null;
+
+    let recipeIndex = {};
+    let producerMap = {};
+    let consumerMap = {};
+    let recipeMaxPct = {};
+    let visibleNodes = new Set();
+    let visibleEdges = new Set();
+
+    let currentTab = 'bottlenecked';
+    let bottleneckEdgesOnly = false;
+
+    function showError(msg) {
+      const el = document.getElementById('error-box');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function pctClass(pct) {
+      if (pct >= 50) return 'pct-red';
+      if (pct >= 20) return 'pct-yellow';
+      return 'pct-green';
+    }
+
+    function nodeColor(pct) {
+      if (pct >= 50) return '#e57373';
+      if (pct >= 20) return '#fff176';
+      if (pct > 0) return '#81c784';
+      return '#4a7a8a';
+    }
+
+    function edgeColor(pct) {
+      if (pct === null || pct === undefined) return '#555';
+      if (pct >= 50) return '#e57373';
+      if (pct >= 20) return '#fff176';
+      if (pct > 0) return '#81c784';
+      return '#4a6a4a';
+    }
+
+    function edgeWidth(pct) {
+      if (pct === null || pct === undefined) return 1;
+      if (pct >= 50) return 4;
+      if (pct >= 20) return 3;
+      if (pct > 0) return 2;
+      return 1;
+    }
+
+    // ── File handling ──────────────────────────────────────────
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', e => {
+      if (e.target.files.length) loadFile(e.target.files[0]);
+    });
+
+    function loadFile(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          graphData = JSON.parse(e.target.result);
+          processData(graphData);
+        } catch (err) {
+          showError('Error: ' + err.message + '\n' + err.stack);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // ── Data processing ────────────────────────────────────────
+    function processData(data) {
+      const recipes = data.recipes;
+      recipeIndex = {};
+      producerMap = {};
+      consumerMap = {};
+      recipeMaxPct = {};
+
+      for (const [name, info] of Object.entries(recipes)) {
+        recipeIndex[name] = info;
+
+        for (const prod of info.products) {
+          const key = prod.type + ':' + prod.name;
+          if (!producerMap[key]) producerMap[key] = [];
+          producerMap[key].push(name);
+        }
+
+        for (const ing of info.ingredients) {
+          const key = ing.type + ':' + ing.name;
+          if (!consumerMap[key]) consumerMap[key] = [];
+          consumerMap[key].push(name);
+        }
+
+        let maxPct = 0;
+        if (info.waiting_pct) {
+          for (const pct of Object.values(info.waiting_pct)) {
+            if (pct > maxPct) maxPct = pct;
+          }
+        }
+        recipeMaxPct[name] = maxPct;
+      }
+
+      initGraph();
+      buildRecipeList();
+
+      document.getElementById('main').style.display = 'flex';
+      document.getElementById('drop-zone').style.display = 'none';
+    }
+
+    // ── Recipe sidebar ──────────────────────────────────────────
+    function buildRecipeList() {
+      renderRecipeList();
+    }
+
+    function renderRecipeList() {
+      const list = document.getElementById('recipe-list');
+      const search = document.getElementById('recipe-search').value.toLowerCase();
+
+      let recipes = Object.keys(recipeIndex);
+
+      if (currentTab === 'bottlenecked') {
+        recipes = recipes.filter(n => recipeMaxPct[n] > 0);
+      }
+
+      if (search) {
+        recipes = recipes.filter(n => n.toLowerCase().includes(search));
+      }
+
+      recipes.sort((a, b) => recipeMaxPct[b] - recipeMaxPct[a]);
+
+      let html = '';
+      for (const name of recipes) {
+        const pct = recipeMaxPct[name];
+        const machines = recipeIndex[name].machines;
+        let badgeClass, badgeText;
+        if (pct >= 50) { badgeClass = 'badge-red'; badgeText = pct.toFixed(0) + '%'; }
+        else if (pct >= 20) { badgeClass = 'badge-yellow'; badgeText = pct.toFixed(0) + '%'; }
+        else if (pct > 0) { badgeClass = 'badge-green'; badgeText = pct.toFixed(0) + '%'; }
+        else { badgeClass = 'badge-none'; badgeText = '0%'; }
+
+        const selected = visibleNodes.has(name) ? ' selected' : '';
+        html += '<div class="recipe-item' + selected + '" onclick="onRecipeClick(\'' + esc(name) + '\')" title="' + esc(name) + ' (' + machines.toFixed(1) + ' machines)">';
+        html += '<span class="ri-name">' + esc(name) + '</span>';
+        html += '<span class="ri-badge ' + badgeClass + '">' + badgeText + '</span>';
+        html += '</div>';
+      }
+
+      if (recipes.length === 0) {
+        html = '<div style="padding:12px;color:#666;text-align:center">No recipes found</div>';
+      }
+
+      list.innerHTML = html;
+    }
+
+    document.getElementById('recipe-search').addEventListener('input', renderRecipeList);
+
+    function switchTab(el) {
+      document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+      currentTab = el.dataset.tab;
+      renderRecipeList();
+    }
+
+    function onRecipeClick(name) {
+      addRecipeWithNeighbors(name);
+      const node = cy.getElementById(name);
+      if (node.length) {
+        cy.animate({ center: { eles: node }, zoom: 1.2 }, { duration: 300 });
+        showDetail(node);
+        highlightNeighborhood(node);
+      }
+    }
+
+    // ── Graph init ─────────────────────────────────────────────
+    function initGraph() {
+      if (cy) cy.destroy();
+      visibleNodes = new Set();
+      visibleEdges = new Set();
+
+      cy = cytoscape({
+        container: document.getElementById('cy'),
+        elements: [],
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'label': 'data(label)',
+              'font-size': '10px',
+              'color': '#e0e0e0',
+              'text-valign': 'bottom',
+              'text-margin-y': 4,
+              'background-color': 'data(color)',
+              'width': 'data(size)',
+              'height': 'data(size)',
+              'border-width': 1,
+              'border-color': '#333',
+              'text-wrap': 'ellipsis',
+              'text-max-width': '100px',
+            }
+          },
+          {
+            selector: 'node.highlighted',
+            style: { 'border-width': 3, 'border-color': '#ff9800', 'z-index': 10 }
+          },
+          {
+            selector: 'node.dimmed',
+            style: { 'opacity': 0.15 }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 'data(width)',
+              'line-color': 'data(color)',
+              'target-arrow-color': 'data(color)',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'arrow-scale': 0.8,
+            }
+          },
+          {
+            selector: 'edge.dimmed',
+            style: { 'opacity': 0.08 }
+          },
+          {
+            selector: 'edge.highlighted',
+            style: { 'z-index': 10 }
+          },
+          {
+            selector: 'edge.hidden-filter',
+            style: { 'display': 'none' }
+          },
+          {
+            selector: 'node.hidden-filter',
+            style: { 'display': 'none' }
+          },
+        ],
+        wheelSensitivity: 0.3,
+        minZoom: 0.05,
+        maxZoom: 5,
+      });
+
+      cy.on('tap', 'node', function(evt) {
+        showDetail(evt.target);
+        highlightNeighborhood(evt.target);
+      });
+
+      cy.on('tap', function(evt) {
+        if (evt.target === cy) {
+          clearHighlight();
+          document.getElementById('detail-panel').style.display = 'none';
+        }
+      });
+
+      cy.on('dbltap', 'node', function(evt) {
+        expandNode(evt.target.id());
+      });
+
+      cy.on('mouseover', 'edge', function(evt) {
+        const edge = evt.target;
+        const ing = edge.data('ingredient');
+        const pct = edge.data('pct');
+        edge.style('label', ing + ' ' + pct.toFixed(1) + '%');
+        edge.style('font-size', '9px');
+        edge.style('color', '#fff');
+        edge.style('text-background-color', '#000');
+        edge.style('text-background-opacity', 0.7);
+        edge.style('text-background-padding', '2px');
+      });
+
+      cy.on('mouseout', 'edge', function(evt) {
+        evt.target.style('label', '');
+      });
+
+      updateStats();
+    }
+
+    // ── Adding nodes/edges incrementally ────────────────────────
+    function makeNodeData(name) {
+      const info = recipeIndex[name];
+      if (!info) return null;
+      const pct = recipeMaxPct[name];
+      const size = Math.max(15, Math.min(60, 10 + Math.sqrt(info.machines) * 4));
+      return {
+        group: 'nodes',
+        data: {
+          id: name,
+          label: name,
+          machines: info.machines,
+          maxPct: pct,
+          color: nodeColor(pct),
+          size: size,
+          ingredients: info.ingredients,
+          products: info.products,
+          waiting_pct: info.waiting_pct || {},
+        }
+      };
+    }
+
+    function addNode(name) {
+      if (visibleNodes.has(name)) return false;
+      if (!recipeIndex[name]) return false;
+      const data = makeNodeData(name);
+      if (!data) return false;
+      cy.add(data);
+      visibleNodes.add(name);
+      return true;
+    }
+
+    function addEdgesBetweenVisible() {
+      for (const consumerName of visibleNodes) {
+        const info = recipeIndex[consumerName];
+        for (const ing of info.ingredients) {
+          const key = ing.type + ':' + ing.name;
+          const producers = producerMap[key];
+          if (!producers) continue;
+          for (const producerName of producers) {
+            if (producerName === consumerName) continue;
+            if (!visibleNodes.has(producerName)) continue;
+            const edgeId = producerName + '>' + consumerName + ':' + ing.name;
+            if (visibleEdges.has(edgeId)) continue;
+            const pct = (info.waiting_pct && info.waiting_pct[ing.name]) || 0;
+            cy.add({
+              group: 'edges',
+              data: {
+                id: edgeId,
+                source: producerName,
+                target: consumerName,
+                ingredient: ing.name,
+                pct: pct,
+                color: edgeColor(pct),
+                width: edgeWidth(pct),
+              }
+            });
+            visibleEdges.add(edgeId);
+          }
+        }
+      }
+      applyEdgeFilter();
+    }
+
+    function getNeighborNames(name) {
+      const info = recipeIndex[name];
+      if (!info) return [];
+      const neighbors = new Set();
+
+      for (const ing of info.ingredients) {
+        const key = ing.type + ':' + ing.name;
+        const producers = producerMap[key] || [];
+        for (const p of producers) {
+          if (p !== name) neighbors.add(p);
+        }
+      }
+
+      for (const prod of info.products) {
+        const key = prod.type + ':' + prod.name;
+        const consumers = consumerMap[key] || [];
+        for (const c of consumers) {
+          if (c !== name) neighbors.add(c);
+        }
+      }
+
+      return [...neighbors];
+    }
+
+    function addRecipeWithNeighbors(name) {
+      const prevSize = visibleNodes.size;
+      document.getElementById('hint').style.display = 'none';
+
+      addNode(name);
+
+      const neighbors = getNeighborNames(name);
+      let toAdd = neighbors;
+      if (neighbors.length > 40) {
+        toAdd = neighbors
+          .filter(n => recipeMaxPct[n] > 0)
+          .sort((a, b) => recipeMaxPct[b] - recipeMaxPct[a])
+          .slice(0, 40);
+      }
+
+      for (const n of toAdd) {
+        addNode(n);
+      }
+
+      addEdgesBetweenVisible();
+
+      if (visibleNodes.size > prevSize) {
+        runLayout();
+      }
+
+      updateStats();
+      renderRecipeList();
+    }
+
+    function expandNode(name) {
+      const prevSize = visibleNodes.size;
+      const neighbors = getNeighborNames(name);
+
+      let toAdd = neighbors;
+      if (neighbors.length > 40) {
+        toAdd = neighbors
+          .filter(n => recipeMaxPct[n] > 0)
+          .sort((a, b) => recipeMaxPct[b] - recipeMaxPct[a])
+          .slice(0, 40);
+      }
+
+      for (const n of toAdd) {
+        addNode(n);
+      }
+
+      addEdgesBetweenVisible();
+
+      if (visibleNodes.size > prevSize) {
+        runLayout();
+      }
+
+      updateStats();
+      renderRecipeList();
+    }
+
+    // ── Layered layout ─────────────────────────────────────────
+    // Assigns Y layers based on longest path from sources (bottom) to sinks (top).
+    // Nodes with only outgoing edges (raw ingredients) go to bottom.
+    // Nodes with only incoming edges (final products) go to top.
+    function computeLayeredPositions() {
+      const nodes = [...visibleNodes];
+      if (nodes.length === 0) return {};
+
+      // Build adjacency from visible edges: source -> [targets]
+      const outgoing = {};
+      const incoming = {};
+      for (const name of nodes) {
+        outgoing[name] = [];
+        incoming[name] = [];
+      }
+
+      // Only consider edges that are actually visible in cytoscape
+      cy.edges().forEach(edge => {
+        if (edge.hasClass('hidden-filter')) return;
+        const src = edge.data('source');
+        const tgt = edge.data('target');
+        if (visibleNodes.has(src) && visibleNodes.has(tgt)) {
+          outgoing[src].push(tgt);
+          incoming[tgt].push(src);
+        }
+      });
+
+      // Compute longest path from any source using BFS/topological approach
+      const depth = {};
+      for (const n of nodes) depth[n] = 0;
+
+      // Kahn's algorithm order, computing max depth along the way
+      const inDegree = {};
+      for (const n of nodes) inDegree[n] = incoming[n].length;
+
+      const queue = nodes.filter(n => inDegree[n] === 0);
+      const order = [];
+
+      while (queue.length > 0) {
+        const n = queue.shift();
+        order.push(n);
+        for (const tgt of outgoing[n]) {
+          depth[tgt] = Math.max(depth[tgt], depth[n] + 1);
+          inDegree[tgt]--;
+          if (inDegree[tgt] === 0) queue.push(tgt);
+        }
+      }
+
+      // Nodes in cycles won't be in order - give them depth 0
+      for (const n of nodes) {
+        if (!order.includes(n)) depth[n] = 0;
+      }
+
+      // Group by layer
+      const layers = {};
+      let maxDepth = 0;
+      for (const n of nodes) {
+        if (depth[n] > maxDepth) maxDepth = depth[n];
+        if (!layers[depth[n]]) layers[depth[n]] = [];
+        layers[depth[n]].push(n);
+      }
+
+      // Assign positions: sources at bottom (high Y), sinks at top (low Y)
+      const positions = {};
+      const layerHeight = 120;
+      const nodeSpacing = 80;
+      const totalHeight = maxDepth * layerHeight;
+
+      for (let d = 0; d <= maxDepth; d++) {
+        const layerNodes = layers[d] || [];
+        const layerWidth = layerNodes.length * nodeSpacing;
+        const startX = -layerWidth / 2;
+        // depth 0 = sources = bottom (positive Y), max depth = sinks = top (negative Y)
+        const y = totalHeight / 2 - d * layerHeight;
+
+        for (let i = 0; i < layerNodes.length; i++) {
+          positions[layerNodes[i]] = {
+            x: startX + i * nodeSpacing + nodeSpacing / 2,
+            y: y
+          };
+        }
+      }
+
+      return positions;
+    }
+
+    function runLayout() {
+      if (!cy || cy.nodes().length === 0) return;
+      const positions = computeLayeredPositions();
+
+      cy.layout({
+        name: 'preset',
+        positions: function(node) {
+          return positions[node.id()] || { x: 0, y: 0 };
+        },
+        animate: true,
+        animationDuration: 400,
+      }).run();
+    }
+
+    function relayout() {
+      if (!cy || cy.nodes().length === 0) return;
+      runLayout();
+      cy.fit(undefined, 30);
+    }
+
+    // ── Edge filter ────────────────────────────────────────────
+    function toggleBottleneckEdges() {
+      bottleneckEdgesOnly = !bottleneckEdgesOnly;
+      const btn = document.getElementById('btn-bottleneck-edges');
+      if (bottleneckEdgesOnly) {
+        btn.classList.remove('secondary');
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+        btn.classList.add('secondary');
+      }
+      applyEdgeFilter();
+      runLayout();
+      updateStats();
+    }
+
+    function applyEdgeFilter() {
+      if (!cy) return;
+      cy.batch(() => {
+        cy.edges().forEach(edge => {
+          if (bottleneckEdgesOnly && edge.data('pct') <= 0) {
+            edge.addClass('hidden-filter');
+          } else {
+            edge.removeClass('hidden-filter');
+          }
+        });
+
+        if (bottleneckEdgesOnly) {
+          cy.nodes().forEach(node => {
+            const hasBottleneckEdge = node.connectedEdges().some(e => !e.hasClass('hidden-filter'));
+            if (hasBottleneckEdge) {
+              node.removeClass('hidden-filter');
+            } else {
+              node.addClass('hidden-filter');
+            }
+          });
+        } else {
+          cy.nodes().removeClass('hidden-filter');
+        }
+      });
+    }
+
+    // ── Toolbar actions ────────────────────────────────────────
+    function loadAllBottlenecks() {
+      document.getElementById('hint').style.display = 'none';
+      const bottlenecked = Object.keys(recipeIndex).filter(n => recipeMaxPct[n] > 0);
+
+      if (bottlenecked.length > 500) {
+        if (!confirm('This will load ' + bottlenecked.length + ' recipes. It may be slow. Continue?')) return;
+      }
+
+      for (const name of bottlenecked) {
+        addNode(name);
+      }
+      addEdgesBetweenVisible();
+      runLayout();
+      cy.fit(undefined, 30);
+      updateStats();
+      renderRecipeList();
+    }
+
+    function expandAll() {
+      const current = [...visibleNodes];
+      for (const name of current) {
+        const neighbors = getNeighborNames(name);
+        let toAdd = neighbors;
+        if (neighbors.length > 20) {
+          toAdd = neighbors
+            .filter(n => recipeMaxPct[n] > 0)
+            .sort((a, b) => recipeMaxPct[b] - recipeMaxPct[a])
+            .slice(0, 20);
+        }
+        for (const n of toAdd) {
+          addNode(n);
+        }
+      }
+      addEdgesBetweenVisible();
+      runLayout();
+      cy.fit(undefined, 30);
+      updateStats();
+      renderRecipeList();
+    }
+
+    function clearGraph() {
+      initGraph();
+      document.getElementById('hint').style.display = 'block';
+      document.getElementById('detail-panel').style.display = 'none';
+      renderRecipeList();
+    }
+
+    // ── Highlight ──────────────────────────────────────────────
+    function highlightNeighborhood(node) {
+      clearHighlight();
+      const neighborhood = node.neighborhood().add(node);
+      cy.elements().not(neighborhood).addClass('dimmed');
+      node.addClass('highlighted');
+      node.connectedEdges().addClass('highlighted');
+      node.neighborhood('node').addClass('highlighted');
+    }
+
+    function clearHighlight() {
+      if (!cy) return;
+      cy.elements().removeClass('dimmed highlighted');
+    }
+
+    // ── Detail panel ───────────────────────────────────────────
+    function showDetail(node) {
+      const d = node.data();
+      document.getElementById('detail-name').textContent = d.label;
+
+      let html = '';
+      html += '<div class="section"><div class="section-title">Machines</div>' + d.machines.toFixed(1) + '</div>';
+
+      html += '<div class="section"><div class="section-title">Products</div>';
+      for (const p of d.products) {
+        html += '<div class="ing-row"><span class="ing-name">' + esc(p.name) + '</span><span>' + p.amount + '</span></div>';
+      }
+      html += '</div>';
+
+      html += '<div class="section"><div class="section-title">Ingredients (waiting %)</div>';
+      for (const ing of d.ingredients) {
+        const pct = d.waiting_pct[ing.name];
+        let pctStr, cls;
+        if (pct !== undefined && pct > 0) {
+          pctStr = pct.toFixed(1) + '%';
+          cls = pctClass(pct);
+        } else {
+          pctStr = '0%';
+          cls = 'pct-none';
+        }
+        html += '<div class="ing-row">';
+        html += '<span class="ing-name">' + esc(ing.name) + ' x' + ing.amount + '</span>';
+        html += '<span class="ing-pct ' + cls + '">' + pctStr + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+
+      const inEdges = node.connectedEdges('[target = "' + d.id + '"]');
+      if (inEdges.length > 0) {
+        const suppliers = new Set();
+        inEdges.forEach(e => suppliers.add(e.data('source')));
+        html += '<div class="section"><div class="section-title">Suppliers in view (' + suppliers.size + ')</div>';
+        for (const s of suppliers) {
+          html += '<div class="detail-link" onclick="focusNode(\'' + esc(s) + '\')">' + esc(s) + '</div>';
+        }
+        html += '</div>';
+      }
+
+      const outEdges = node.connectedEdges('[source = "' + d.id + '"]');
+      if (outEdges.length > 0) {
+        const consumers = new Set();
+        outEdges.forEach(e => consumers.add(e.data('target')));
+        html += '<div class="section"><div class="section-title">Consumers in view (' + consumers.size + ')</div>';
+        for (const c of consumers) {
+          html += '<div class="detail-link" onclick="focusNode(\'' + esc(c) + '\')">' + esc(c) + '</div>';
+        }
+        html += '</div>';
+      }
+
+      const allNeighbors = getNeighborNames(d.id);
+      const offScreen = allNeighbors.filter(n => !visibleNodes.has(n));
+      if (offScreen.length > 0) {
+        html += '<div class="section">';
+        html += '<div class="detail-link" onclick="expandNode(\'' + esc(d.id) + '\')">';
+        html += 'Expand ' + offScreen.length + ' hidden neighbor' + (offScreen.length > 1 ? 's' : '') + '...';
+        html += '</div></div>';
+      }
+
+      document.getElementById('detail-body').innerHTML = html;
+      document.getElementById('detail-panel').style.display = 'block';
+    }
+
+    function focusNode(name) {
+      const node = cy.getElementById(name);
+      if (node.length) {
+        cy.animate({ center: { eles: node }, zoom: 1.5 }, { duration: 300 });
+        showDetail(node);
+        highlightNeighborhood(node);
+      }
+    }
+
+    function updateStats() {
+      const total = Object.keys(recipeIndex).length;
+      const shown = visibleNodes.size;
+      const visEdges = cy ? cy.edges().filter(e => !e.hasClass('hidden-filter')).length : 0;
+      document.getElementById('stats').textContent = shown + '/' + total + ' recipes, ' + visEdges + ' links';
+    }
+  </script>
+</body>
+</html>

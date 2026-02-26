@@ -153,3 +153,80 @@ commands.add_command("bottleneck-dump", "Export recipe sample data to JSON file"
   helpers.write_file(file, table.concat(parts), false)
   player.print("Exported " .. recipe_count .. " recipes -> script-output/" .. file)
 end)
+
+commands.add_command("bottleneck-graph", "Export recipe dependency graph to JSON file", function(cmd)
+  local player = game.get_player(cmd.player_index)
+  if not player then return end
+
+  local parts = {}
+  parts[#parts + 1] = '{"game_tick":' .. game.tick .. ',"recipes":{'
+
+  local first_recipe = true
+  local recipe_count = 0
+  for recipe_name, _ in pairs(storage.samples or {}) do
+    local samples = data_store.query(recipe_name, 0)
+    if #samples == 0 then goto continue end
+
+    local recipe_proto = prototypes.recipe[recipe_name]
+    if not recipe_proto then goto continue end
+
+    if not first_recipe then parts[#parts + 1] = ',' end
+    first_recipe = false
+    recipe_count = recipe_count + 1
+
+    parts[#parts + 1] = '"' .. recipe_name .. '":{'
+
+    -- Ingredients
+    parts[#parts + 1] = '"ingredients":['
+    for k, ing in ipairs(recipe_proto.ingredients) do
+      if k > 1 then parts[#parts + 1] = ',' end
+      parts[#parts + 1] = '{"name":"' .. ing.name .. '","type":"' .. ing.type .. '","amount":' .. ing.amount .. '}'
+    end
+    parts[#parts + 1] = '],'
+
+    -- Products
+    parts[#parts + 1] = '"products":['
+    for k, prod in ipairs(recipe_proto.products) do
+      if k > 1 then parts[#parts + 1] = ',' end
+      local amount = prod.amount or ((prod.amount_min + prod.amount_max) / 2)
+      parts[#parts + 1] = '{"name":"' .. prod.name .. '","type":"' .. prod.type .. '","amount":' .. amount .. '}'
+    end
+    parts[#parts + 1] = '],'
+
+    -- Compute avg machines and waiting percentages from samples
+    local total_machines = 0
+    local waiting_totals = {}
+    for _, s in ipairs(samples) do
+      total_machines = total_machines + s.total_machines
+      if s.waiting then
+        for ing_name, count in pairs(s.waiting) do
+          waiting_totals[ing_name] = (waiting_totals[ing_name] or 0) + count
+        end
+      end
+    end
+    local avg_machines = total_machines / #samples
+
+    parts[#parts + 1] = '"machines":' .. string.format("%.1f", avg_machines)
+
+    -- Waiting percentages: (total waiting for X) / (total machines across all samples) * 100
+    if next(waiting_totals) and total_machines > 0 then
+      parts[#parts + 1] = ',"waiting_pct":{'
+      local first_w = true
+      for ing_name, wtotal in pairs(waiting_totals) do
+        if not first_w then parts[#parts + 1] = ',' end
+        first_w = false
+        local pct = wtotal / total_machines * 100
+        parts[#parts + 1] = '"' .. ing_name .. '":' .. string.format("%.1f", pct)
+      end
+      parts[#parts + 1] = '}'
+    end
+
+    parts[#parts + 1] = '}'
+    ::continue::
+  end
+
+  parts[#parts + 1] = '}}'
+  local file = "bottleneck-analyzer-graph.json"
+  helpers.write_file(file, table.concat(parts), false)
+  player.print("Exported " .. recipe_count .. " recipes -> script-output/" .. file)
+end)

@@ -6,16 +6,7 @@ local gui = require("scripts.gui")
 local ENTITY_FILTERS = {
   { filter = "type", type = "assembling-machine" },
   { filter = "type", type = "furnace" },
-  { filter = "type", type = "rocket-silo" },
 }
-
---- Register the per-tick handler for chunked sampling.
-local function register_nth_tick()
-  script.on_nth_tick(nil)
-  script.on_nth_tick(1, function(event)
-    tracker.sample_chunk(event.tick)
-  end)
-end
 
 --- Full initialization.
 local function full_init()
@@ -23,8 +14,12 @@ local function full_init()
   gui.init()
   tracker.init_storage()
   tracker.scan_surfaces()
-  register_nth_tick()
 end
+
+-- Register unconditionally so it persists across all save/load scenarios
+script.on_nth_tick(1, function(event)
+  tracker.sample_chunk(event.tick)
+end)
 
 -- on_init: first time mod is loaded
 script.on_init(function()
@@ -35,7 +30,6 @@ end)
 script.on_configuration_changed(function(data)
   local mod_changes = data.mod_changes and data.mod_changes["bottleneck-analyzer"]
   if mod_changes and mod_changes.old_version then
-    -- Force sample rate to 30s for users upgrading from old versions with bad defaults
     local current_rate = settings.global["bottleneck-analyzer-sample-rate"].value
     if current_rate < 10 then
       settings.global["bottleneck-analyzer-sample-rate"] = { value = 30.0 }
@@ -75,7 +69,6 @@ script.on_event(defines.events.on_lua_shortcut, function(event)
   end
 end)
 
-
 -- GUI events
 script.on_event(defines.events.on_gui_click, function(event)
   gui.on_click(event)
@@ -92,49 +85,71 @@ end)
 script.on_event(defines.events.on_gui_closed, function(event)
   gui.on_closed(event)
 end)
--- Remote interface for profiling
-remote.add_interface("bottleneck-analyzer", {
-  profile_on = function() tracker.enable_profiling(true) end,
-  profile_off = function() tracker.enable_profiling(false) end,
-})
 
--- Debug command: /bottleneck-debug <recipe_name>
-commands.add_command("bottleneck-debug", "Dump sample ticks for a recipe", function(cmd)
+-- Console commands
+commands.add_command("bottleneck-status", "Show tracking diagnostics", function(cmd)
   local player = game.get_player(cmd.player_index)
   if not player then return end
-  local recipe_name = cmd.parameter
-  if not recipe_name or recipe_name == "" then
-    -- List all recipes with data
-    local count = 0
-    for name, rb in pairs(storage.samples or {}) do
-      player.print(name .. ": " .. rb.count .. " samples, head=" .. rb.head)
-      count = count + 1
-      if count >= 20 then
-        player.print("... (truncated)")
-        break
-      end
-    end
-    player.print("game.tick = " .. game.tick)
-    return
-  end
-  local rb = storage.samples and storage.samples[recipe_name]
-  if not rb then
-    player.print("No data for recipe: " .. recipe_name)
-    return
-  end
-  player.print("Recipe: " .. recipe_name .. " count=" .. rb.count .. " head=" .. rb.head)
-  player.print("game.tick = " .. game.tick)
-  -- Show last 5 sample ticks
-  local shown = 0
-  for i = rb.count, math.max(1, rb.count - 4), -1 do
-    local idx = ((rb.head - 1 - (rb.count - i)) % 100) + 1
-    local s = rb.buffer[idx]
-    if s then
-      local age = game.tick - s.tick
-      player.print("  sample[" .. idx .. "] tick=" .. s.tick .. " (age=" .. age .. " ticks, " .. string.format("%.1f", age/60) .. "s) machines=" .. s.total_machines)
-    end
-    shown = shown + 1
-  end
+  player.print("Enabled: " .. tostring(settings.global["bottleneck-analyzer-enabled"].value))
+  player.print("Entity list: " .. #storage.entity_list)
+  player.print("Cursor: " .. storage.sample_cursor)
+  player.print("Tick: " .. game.tick)
+  local recipe_count = 0
+  for _ in pairs(storage.samples or {}) do recipe_count = recipe_count + 1 end
+  player.print("Recipes with data: " .. recipe_count)
+  local cache_count = 0
+  for _ in pairs(storage.recipe_cache or {}) do cache_count = cache_count + 1 end
+  player.print("Recipe cache entries: " .. cache_count)
 end)
 
--- Settings changed (batch size adapts automatically, no re-registration needed)
+commands.add_command("bottleneck-reset", "Clear all collected sample data", function(cmd)
+  local player = game.get_player(cmd.player_index)
+  if not player then return end
+  local count = 0
+  for _ in pairs(storage.samples or {}) do count = count + 1 end
+  storage.samples = {}
+  storage.sample_cursor = 1
+  player.print("Cleared " .. count .. " recipes of sample data")
+end)
+
+commands.add_command("bottleneck-dump", "Export recipe sample data to JSON file", function(cmd)
+  local player = game.get_player(cmd.player_index)
+  if not player then return end
+
+  local parts = {}
+  parts[#parts + 1] = '{"game_tick":' .. game.tick .. ',"recipes":{'
+
+  local first_recipe = true
+  local recipe_count = 0
+  for recipe_name, _ in pairs(storage.samples or {}) do
+    local samples = data_store.query(recipe_name, 0)
+    if #samples > 0 then
+      if not first_recipe then parts[#parts + 1] = ',' end
+      first_recipe = false
+      recipe_count = recipe_count + 1
+
+      parts[#parts + 1] = '"' .. recipe_name .. '":['
+      for j, s in ipairs(samples) do
+        if j > 1 then parts[#parts + 1] = ',' end
+        parts[#parts + 1] = '{"tick":' .. s.tick .. ',"total":' .. s.total_machines
+        if s.waiting then
+          parts[#parts + 1] = ',"w":{'
+          local first_w = true
+          for ing, count in pairs(s.waiting) do
+            if not first_w then parts[#parts + 1] = ',' end
+            first_w = false
+            parts[#parts + 1] = '"' .. ing .. '":' .. count
+          end
+          parts[#parts + 1] = '}'
+        end
+        parts[#parts + 1] = '}'
+      end
+      parts[#parts + 1] = ']'
+    end
+  end
+
+  parts[#parts + 1] = '}}'
+  local file = "bottleneck-analyzer-recipes.json"
+  helpers.write_file(file, table.concat(parts), false)
+  player.print("Exported " .. recipe_count .. " recipes -> script-output/" .. file)
+end)

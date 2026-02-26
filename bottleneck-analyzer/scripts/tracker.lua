@@ -5,30 +5,43 @@ local tracker = {}
 local TRACKED_TYPES = {
   ["assembling-machine"] = true,
   ["furnace"] = true,
-  ["rocket-silo"] = true,
 }
 
 local MAX_BATCH_SIZE = 500
 local RECHECK_COUNT = 50  -- random recipe cache re-checks per sweep
+local STATUS_RECHECK_RATE = 10  -- recheck 1 in N "working" entities per sweep
 
 -- Transient state (not saved, rebuilt each sweep)
 local current_aggregation = {}
-local sweep_entity_count = 0
-local sweep_invalid_count = 0
-local sweep_waiting_count = 0
-local sweep_cache_hits = 0
-local sweep_cache_misses = 0
-local sweep_start_tick = 0
 
--- Profiling
-local profile_enabled = true
-local profile_count = 0
-local PROFILE_INTERVAL = 5
-local p_total_sweep, p_validity_sweep, p_status_sweep, p_ingredients_sweep, p_datastore_sweep
+-- Status cache: unit_number -> true if waiting last sweep
+local status_cache = {}
 
 ------------------------------------------------------------------------
 -- Recipe helpers
 ------------------------------------------------------------------------
+
+local building_recipe_cache = {}
+
+local function is_building_recipe(recipe_name)
+  local cached = building_recipe_cache[recipe_name]
+  if cached ~= nil then return cached end
+  local ok, result = pcall(function()
+    local recipe_proto = prototypes.recipe[recipe_name]
+    if not recipe_proto then return false end
+    for _, product in pairs(recipe_proto.products) do
+      if product.type == "item" then
+        local item_proto = prototypes.item[product.name]
+        if item_proto and item_proto.place_result then
+          return true
+        end
+      end
+    end
+    return false
+  end)
+  building_recipe_cache[recipe_name] = ok and result or false
+  return building_recipe_cache[recipe_name]
+end
 
 local function get_entity_recipe_safe(entity)
   if entity.type == "furnace" then
@@ -90,6 +103,7 @@ function tracker.untrack_entity(entity)
   storage.tracked_entities[un] = nil
   remove_from_entity_list(un)
   storage.recipe_cache[un] = nil
+  status_cache[un] = nil
 end
 
 function tracker.scan_surfaces()
@@ -110,6 +124,19 @@ function tracker.scan_surfaces()
           storage.recipe_cache[un] = recipe and recipe.name or false
         end
       end
+    end
+  end
+
+  -- Fisher-Yates shuffle to distribute entities evenly across batches
+  local list = storage.entity_list
+  local index = storage.entity_list_index
+  local n = #list
+  for i = n, 2, -1 do
+    local j = math.random(1, i)
+    if i ~= j then
+      list[i], list[j] = list[j], list[i]
+      index[list[i]] = i
+      index[list[j]] = j
     end
   end
 end
@@ -142,51 +169,6 @@ local function get_short_ingredients(entity, recipe_proto)
   end
 
   return found_any and short or nil
-end
-
-------------------------------------------------------------------------
--- Profiling
-------------------------------------------------------------------------
-
-function tracker.enable_profiling(enabled)
-  profile_enabled = enabled
-  profile_count = 0
-  log("Bottleneck Analyzer: profiling " .. (enabled and "ENABLED" or "DISABLED"))
-end
-
-local function reset_sweep_profilers()
-  if not profile_enabled then return end
-  p_total_sweep = game.create_profiler()
-  p_validity_sweep = game.create_profiler()
-  p_validity_sweep.stop()
-  p_status_sweep = game.create_profiler()
-  p_status_sweep.stop()
-  p_ingredients_sweep = game.create_profiler()
-  p_ingredients_sweep.stop()
-  p_datastore_sweep = game.create_profiler()
-  p_datastore_sweep.stop()
-end
-
-local function write_sweep_profile(tick)
-  if not profile_enabled then return end
-  p_total_sweep.stop()
-  profile_count = profile_count + 1
-  if profile_count % PROFILE_INTERVAL ~= 0 then return end
-
-  local header = "=== Bottleneck Analyzer Sweep (tick " .. tick .. ") ===\n"
-      .. "  Entities: " .. sweep_entity_count .. " processed, "
-      .. sweep_invalid_count .. " invalid, "
-      .. sweep_waiting_count .. " waiting\n"
-      .. "  Cache: " .. sweep_cache_hits .. " hits, "
-      .. sweep_cache_misses .. " misses\n"
-      .. "  Sweep duration: " .. (tick - sweep_start_tick) .. " ticks\n"
-  helpers.write_file("bottleneck-analyzer-profile.txt", header, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  TOTAL:        ", p_total_sweep, "\n"}, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  validity:     ", p_validity_sweep, "\n"}, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  status:       ", p_status_sweep, "\n"}, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  ingredients:  ", p_ingredients_sweep, "\n"}, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", {"", "  data_store:   ", p_datastore_sweep, "\n"}, true)
-  helpers.write_file("bottleneck-analyzer-profile.txt", "================================================\n", true)
 end
 
 ------------------------------------------------------------------------
@@ -229,21 +211,11 @@ function tracker.sample_chunk(tick)
   if total == 0 then return end
 
   local cursor = storage.sample_cursor
-  local profiling = profile_enabled
 
   -- Start of new sweep?
   if cursor == 1 then
     current_aggregation = {}
-    sweep_entity_count = 0
-    sweep_invalid_count = 0
-    sweep_waiting_count = 0
-    sweep_cache_hits = 0
-    sweep_cache_misses = 0
-    sweep_start_tick = tick
-    if profiling then reset_sweep_profilers() end
   end
-
-  if profiling then p_total_sweep.restart() end
 
   local batch_size = get_batch_size()
   local end_idx = cursor + batch_size - 1
@@ -254,27 +226,18 @@ function tracker.sample_chunk(tick)
   for i = cursor, end_idx do
     local un = list[i]
     local entity = storage.tracked_entities[un]
-    sweep_entity_count = sweep_entity_count + 1
 
-    if profiling then p_validity_sweep.restart() end
-    local valid = entity and entity.valid
-    if profiling then p_validity_sweep.stop() end
-
-    if not valid then
+    if not (entity and entity.valid) then
       to_remove[#to_remove + 1] = un
-      sweep_invalid_count = sweep_invalid_count + 1
     else
       local recipe_name = storage.recipe_cache[un]
       if recipe_name == nil then
         local recipe = get_entity_recipe_safe(entity)
         recipe_name = recipe and recipe.name or false
         storage.recipe_cache[un] = recipe_name
-        sweep_cache_misses = sweep_cache_misses + 1
-      else
-        sweep_cache_hits = sweep_cache_hits + 1
       end
 
-      if recipe_name then
+      if recipe_name and not is_building_recipe(recipe_name) then
         local recipe_proto = prototypes.recipe[recipe_name]
         if recipe_proto then
           if not current_aggregation[recipe_name] then
@@ -283,22 +246,21 @@ function tracker.sample_chunk(tick)
           local agg = current_aggregation[recipe_name]
           agg.total = agg.total + 1
 
-          if profiling then p_status_sweep.restart() end
-          local status = entity.status
-          if profiling then p_status_sweep.stop() end
+          if status_cache[un] or (math.random(1, STATUS_RECHECK_RATE) == 1) then
+            local status = entity.status
 
-          if status == defines.entity_status.item_ingredient_shortage
-              or status == defines.entity_status.fluid_ingredient_shortage
-              or status == defines.entity_status.no_ingredients then
-            sweep_waiting_count = sweep_waiting_count + 1
+            local is_waiting = status == defines.entity_status.item_ingredient_shortage
+                or status == defines.entity_status.fluid_ingredient_shortage
+                or status == defines.entity_status.no_ingredients
 
-            if profiling then p_ingredients_sweep.restart() end
-            local short = get_short_ingredients(entity, recipe_proto)
-            if profiling then p_ingredients_sweep.stop() end
+            status_cache[un] = is_waiting
 
-            if short then
-              for ingredient_name, _ in pairs(short) do
-                agg.waiting[ingredient_name] = (agg.waiting[ingredient_name] or 0) + 1
+            if is_waiting then
+              local short = get_short_ingredients(entity, recipe_proto)
+              if short then
+                for ingredient_name, _ in pairs(short) do
+                  agg.waiting[ingredient_name] = (agg.waiting[ingredient_name] or 0) + 1
+                end
               end
             end
           end
@@ -307,27 +269,22 @@ function tracker.sample_chunk(tick)
     end
   end
 
-  if profiling then p_total_sweep.stop() end
-
   -- Clean up invalid entities (after iteration to avoid messing with indices)
   for _, un in ipairs(to_remove) do
     storage.tracked_entities[un] = nil
     remove_from_entity_list(un)
     storage.recipe_cache[un] = nil
+    status_cache[un] = nil
   end
 
   -- Advance cursor
   cursor = end_idx + 1
   if cursor > #storage.entity_list then
     -- Sweep complete: write aggregated data to ring buffers
-    if profiling then p_datastore_sweep.restart() end
     for recipe_name, agg in pairs(current_aggregation) do
       local waiting = next(agg.waiting) and agg.waiting or nil
       data_store.record_sample(recipe_name, tick, agg.total, waiting)
     end
-    if profiling then p_datastore_sweep.stop() end
-
-    write_sweep_profile(tick)
 
     -- Staleness recheck
     do_staleness_recheck()

@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bottleneck Analyzer - Recipe Visualizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 24px;
+    }
+    h1 { color: #ff9800; margin-bottom: 4px; }
+    .subtitle { color: #888; font-size: 0.85em; margin-bottom: 20px; }
+    h2 { color: #ccc; margin: 24px 0 8px; font-size: 1.1em; }
+    h3 { color: #aaa; margin: 16px 0 8px; font-size: 1em; }
+    .hint { color: #888; font-size: 0.85em; margin-bottom: 8px; }
+    #error-box { color: #e57373; background: #2a1a1a; padding: 12px; border-radius: 6px; margin: 12px 0; display: none; white-space: pre-wrap; font-family: monospace; font-size: 0.85em; }
+
+    #drop-zone {
+      border: 2px dashed #555;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      margin-bottom: 20px;
+    }
+    #drop-zone:hover, #drop-zone.dragover { border-color: #ff9800; }
+    #drop-zone input { display: none; }
+    #drop-zone code { color: #ff9800; }
+
+    #content { display: none; }
+
+    #summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .stat-card {
+      background: #16213e;
+      padding: 12px;
+      border-radius: 6px;
+      border-left: 3px solid #ff9800;
+    }
+    .stat-card .label { font-size: 0.8em; color: #888; }
+    .stat-card .value { font-size: 1.3em; font-weight: bold; color: #fff; overflow: hidden; text-overflow: ellipsis; }
+
+    #recipe-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .chart-container {
+      background: #16213e;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+      position: relative;
+      height: 280px;
+    }
+
+    #recipe-controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    select {
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #555;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 0.95em;
+      min-width: 280px;
+    }
+    select:focus { outline: none; border-color: #ff9800; }
+
+    button {
+      background: #ff9800;
+      color: #000;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover { background: #ffb74d; }
+
+    #recipe-table-container { max-height: 400px; overflow-y: auto; margin-bottom: 16px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #16213e;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td { padding: 6px 10px; text-align: right; font-size: 0.85em; }
+    th { background: #0f3460; color: #ff9800; font-size: 0.8em; position: sticky; top: 0; z-index: 1; }
+    td { border-top: 1px solid #1a1a2e; }
+    tbody tr:hover td { background: #1a2744; cursor: pointer; }
+    td:first-child, th:first-child { text-align: left; }
+    tbody tr.selected td { background: #1a3358; }
+  </style>
+</head>
+<body>
+  <h1>Bottleneck Analyzer - Recipe Visualizer</h1>
+  <p class="subtitle">Visualize recipe bottleneck data over time. Export with <code>/bottleneck-dump</code> in Factorio.</p>
+  <div id="error-box"></div>
+
+  <div id="drop-zone" tabindex="0">
+    <p>Drop <code>bottleneck-analyzer-recipes.json</code> here or click to select</p>
+    <p style="font-size:0.8em;color:#888;margin-top:8px">
+      Found in: <code>%APPDATA%\Factorio\script-output\</code>
+    </p>
+    <input type="file" id="file-input" accept=".json">
+  </div>
+
+  <div id="content">
+    <div id="summary"></div>
+
+    <h2>Top Bottlenecks</h2>
+    <p class="hint">Top 30 recipes by bottleneck severity. Click a bar to view details.</p>
+    <div id="overview-container" class="chart-container">
+      <canvas id="chart-overview"></canvas>
+    </div>
+
+    <h2>All Recipes (<span id="recipe-count"></span>)</h2>
+    <p class="hint">Click a row to view details. Sorted by bottleneck severity.</p>
+    <div id="recipe-table-container"></div>
+
+    <h2>Recipe Detail</h2>
+    <div id="recipe-controls">
+      <select id="recipe-select"></select>
+      <button onclick="resetDetailZoom()">Reset Zoom</button>
+      <span class="hint">Scroll to zoom, drag to pan</span>
+    </div>
+    <div id="recipe-stats"></div>
+
+    <h3>Machines Over Time</h3>
+    <p class="hint">Green area = total machines. Colored lines = machines waiting for each ingredient.</p>
+    <div class="chart-container" style="height:320px">
+      <canvas id="chart-timeline"></canvas>
+    </div>
+
+    <h3>Bottleneck % Over Time</h3>
+    <p class="hint">Percentage of machines waiting at each sample point.</p>
+    <div class="chart-container" style="height:220px">
+      <canvas id="chart-pct-timeline"></canvas>
+    </div>
+
+    <h3>Ingredient Waiting Breakdown (Total)</h3>
+    <div id="ingredient-container" class="chart-container" style="height:200px">
+      <canvas id="chart-ingredients"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const COLORS = [
+      '#e57373', '#f06292', '#ba68c8', '#9575cd', '#7986cb',
+      '#64b5f6', '#4fc3f7', '#4dd0e1', '#4db6ac', '#81c784',
+      '#aed581', '#dce775', '#fff176', '#ffd54f', '#ffb74d',
+      '#ff8a65', '#a1887f', '#90a4ae',
+    ];
+    const MAX_OVERVIEW_BARS = 30;
+
+    let recipeData = {};
+    let sortedRecipes = [];
+    let overviewChart = null;
+    let timelineChart = null;
+    let pctTimelineChart = null;
+    let ingredientChart = null;
+    let gameTick = 0;
+
+    function showError(msg) {
+      const el = document.getElementById('error-box');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    // ── File handling ──────────────────────────────────────────
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', e => {
+      if (e.target.files.length) loadFile(e.target.files[0]);
+    });
+
+    function loadFile(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const data = JSON.parse(e.target.result);
+          processData(data);
+        } catch (err) {
+          showError('Error: ' + err.message + '\n' + err.stack);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // ── Data processing ────────────────────────────────────────
+    function processData(data) {
+      recipeData = data.recipes;
+      gameTick = data.game_tick || 0;
+      sortedRecipes = computeRecipeStats();
+
+      buildSummary();
+      buildOverview();
+      buildRecipeTable();
+      populateSelector();
+
+      if (sortedRecipes.length > 0) {
+        selectRecipe(sortedRecipes[0].name);
+      }
+
+      document.getElementById('content').style.display = 'block';
+      document.getElementById('drop-zone').style.display = 'none';
+    }
+
+    function computeRecipeStats() {
+      const recipes = [];
+      for (const [name, samples] of Object.entries(recipeData)) {
+        if (samples.length === 0) continue;
+        let totalWaiting = 0;
+        let totalMachines = 0;
+        let samplesWithWaiting = 0;
+        const ingredientTotals = {};
+
+        for (const s of samples) {
+          totalMachines += s.total;
+          if (s.w) {
+            samplesWithWaiting++;
+            for (const [ing, count] of Object.entries(s.w)) {
+              totalWaiting += count;
+              ingredientTotals[ing] = (ingredientTotals[ing] || 0) + count;
+            }
+          }
+        }
+
+        const avgMachines = totalMachines / samples.length;
+        const bottleneckPct = totalMachines > 0 ? (totalWaiting / totalMachines * 100) : 0;
+
+        let topIngredient = null;
+        let topCount = 0;
+        for (const [ing, count] of Object.entries(ingredientTotals)) {
+          if (count > topCount) { topIngredient = ing; topCount = count; }
+        }
+
+        const firstTick = samples[0].tick;
+        const lastTick = samples[samples.length - 1].tick;
+
+        recipes.push({
+          name,
+          sampleCount: samples.length,
+          avgMachines: Math.round(avgMachines * 10) / 10,
+          totalWaiting,
+          totalMachines,
+          bottleneckPct: Math.round(bottleneckPct * 10) / 10,
+          samplesWithWaiting,
+          topIngredient,
+          topIngredientPct: totalWaiting > 0 ? Math.round(topCount / totalWaiting * 100) : 0,
+          firstTick,
+          lastTick,
+          timeSpanSec: Math.round((lastTick - firstTick) / 60),
+        });
+      }
+      recipes.sort((a, b) => b.bottleneckPct - a.bottleneckPct);
+      return recipes;
+    }
+
+    function tickToTime(tick) {
+      const sec = tick / 60;
+      if (sec < 60) return sec.toFixed(1) + 's';
+      if (sec < 3600) return (sec / 60).toFixed(1) + 'm';
+      return (sec / 3600).toFixed(1) + 'h';
+    }
+
+    // ── Summary ────────────────────────────────────────────────
+    function buildSummary() {
+      const totalRecipes = sortedRecipes.length;
+      const bottlenecked = sortedRecipes.filter(r => r.bottleneckPct > 0).length;
+      const totalMachines = sortedRecipes.reduce((s, r) => s + r.avgMachines, 0);
+      const worst = sortedRecipes.length > 0 ? sortedRecipes[0] : null;
+
+      const stats = [
+        { label: 'Total Recipes', value: totalRecipes },
+        { label: 'With Bottlenecks', value: bottlenecked },
+        { label: 'Total Machines (avg)', value: Math.round(totalMachines) },
+        { label: 'Worst Recipe', value: worst ? esc(worst.name) : 'N/A' },
+        { label: 'Worst Bottleneck', value: worst ? worst.bottleneckPct + '%' : 'N/A' },
+        { label: 'Game Tick', value: gameTick.toLocaleString() },
+      ];
+
+      document.getElementById('summary').innerHTML = stats.map(s =>
+        `<div class="stat-card">
+          <div class="label">${s.label}</div>
+          <div class="value">${s.value}</div>
+        </div>`
+      ).join('');
+    }
+
+    // ── Colors ─────────────────────────────────────────────────
+    function getBottleneckColor(pct) {
+      if (pct >= 50) return '#e57373';
+      if (pct >= 20) return '#ffb74d';
+      if (pct >= 5) return '#fff176';
+      return '#81c784';
+    }
+
+    // ── Overview chart ─────────────────────────────────────────
+    function buildOverview() {
+      if (overviewChart) overviewChart.destroy();
+      overviewChart = null;
+
+      const withBottlenecks = sortedRecipes.filter(r => r.bottleneckPct > 0);
+      const container = document.getElementById('overview-container');
+
+      if (withBottlenecks.length === 0) {
+        container.innerHTML = '<p class="hint" style="padding:20px">No bottlenecks detected in any recipe.</p>';
+        container.style.height = 'auto';
+        return;
+      }
+
+      const toShow = withBottlenecks.slice(0, MAX_OVERVIEW_BARS);
+      const barHeight = 26;
+      const containerHeight = Math.max(200, toShow.length * barHeight + 50);
+      container.style.height = containerHeight + 'px';
+      container.innerHTML = '<canvas id="chart-overview"></canvas>';
+
+      const ctx = document.getElementById('chart-overview').getContext('2d');
+      overviewChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: toShow.map(r => r.name),
+          datasets: [{
+            data: toShow.map(r => r.bottleneckPct),
+            backgroundColor: toShow.map(r => getBottleneckColor(r.bottleneckPct)),
+            borderWidth: 0,
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          onClick: (_event, elements) => {
+            if (elements.length > 0) {
+              selectRecipe(toShow[elements[0].index].name);
+            }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (item) => {
+                  const r = toShow[item.dataIndex];
+                  return `${r.bottleneckPct}% | ${r.avgMachines} machines | top: ${r.topIngredient || 'none'}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              title: { display: true, text: 'Bottleneck %', color: '#888' },
+              ticks: { color: '#888' },
+              grid: { color: 'rgba(255,255,255,0.05)' },
+            },
+            y: {
+              ticks: { color: '#ccc', font: { size: 11 } },
+              grid: { display: false },
+            },
+          },
+        }
+      });
+    }
+
+    // ── Recipe table ───────────────────────────────────────────
+    function buildRecipeTable() {
+      document.getElementById('recipe-count').textContent = sortedRecipes.length;
+      const tbody = document.createElement('tbody');
+
+      for (let idx = 0; idx < sortedRecipes.length; idx++) {
+        const r = sortedRecipes[idx];
+        const tr = document.createElement('tr');
+        tr.dataset.idx = idx;
+        const color = getBottleneckColor(r.bottleneckPct);
+        tr.innerHTML =
+          `<td>${esc(r.name)}</td>` +
+          `<td>${r.avgMachines}</td>` +
+          `<td style="color:${color};font-weight:bold">${r.bottleneckPct}%</td>` +
+          `<td>${r.sampleCount}</td>` +
+          `<td>${r.samplesWithWaiting}</td>` +
+          `<td>${esc(r.topIngredient || '-')}${r.topIngredient ? ' (' + r.topIngredientPct + '%)' : ''}</td>` +
+          `<td>${tickToTime(r.lastTick - r.firstTick)}</td>`;
+        tbody.appendChild(tr);
+      }
+
+      const table = document.createElement('table');
+      table.innerHTML = `<thead><tr>
+        <th>Recipe</th><th>Avg Machines</th><th>Bottleneck %</th>
+        <th>Samples</th><th>w/ Waiting</th><th>Top Ingredient</th><th>Time Span</th>
+      </tr></thead>`;
+      table.appendChild(tbody);
+
+      // Event delegation
+      tbody.addEventListener('click', e => {
+        const tr = e.target.closest('tr');
+        if (!tr || tr.dataset.idx === undefined) return;
+        const r = sortedRecipes[parseInt(tr.dataset.idx)];
+        if (r) selectRecipe(r.name);
+      });
+
+      const container = document.getElementById('recipe-table-container');
+      container.innerHTML = '';
+      container.appendChild(table);
+    }
+
+    // ── Recipe selector ────────────────────────────────────────
+    function populateSelector() {
+      const select = document.getElementById('recipe-select');
+      select.innerHTML = '';
+      for (const r of sortedRecipes) {
+        const opt = document.createElement('option');
+        opt.value = r.name;
+        opt.textContent = `${r.name} (${r.bottleneckPct}%)`;
+        select.appendChild(opt);
+      }
+      select.addEventListener('change', () => selectRecipe(select.value));
+    }
+
+    // ── Select recipe ──────────────────────────────────────────
+    function selectRecipe(name) {
+      document.getElementById('recipe-select').value = name;
+
+      // Highlight table row
+      const tbody = document.querySelector('#recipe-table-container tbody');
+      if (tbody) {
+        const prev = tbody.querySelector('tr.selected');
+        if (prev) prev.classList.remove('selected');
+        const idx = sortedRecipes.findIndex(r => r.name === name);
+        if (idx >= 0) {
+          const row = tbody.querySelector(`tr[data-idx="${idx}"]`);
+          if (row) {
+            row.classList.add('selected');
+            row.scrollIntoView({ block: 'nearest' });
+          }
+        }
+      }
+
+      const stats = sortedRecipes.find(r => r.name === name);
+      if (stats) {
+        document.getElementById('recipe-stats').innerHTML = [
+          { label: 'Avg Machines', value: stats.avgMachines },
+          { label: 'Samples', value: stats.sampleCount },
+          { label: 'Bottleneck', value: `<span style="color:${getBottleneckColor(stats.bottleneckPct)}">${stats.bottleneckPct}%</span>` },
+          { label: 'Top Waiting', value: esc(stats.topIngredient || 'none') },
+          { label: 'Time Span', value: tickToTime(stats.lastTick - stats.firstTick) },
+        ].map(s =>
+          `<div class="stat-card">
+            <div class="label">${s.label}</div>
+            <div class="value">${s.value}</div>
+          </div>`
+        ).join('');
+      }
+
+      try {
+        buildTimeline(name);
+        buildPctTimeline(name);
+        buildIngredientBreakdown(name);
+      } catch (err) {
+        showError('Chart error: ' + err.message + '\n' + err.stack);
+      }
+    }
+
+    // ── Shared chart helpers ───────────────────────────────────
+    function tickTooltipTitle(items) {
+      if (!items.length) return '';
+      const tick = items[0].parsed.x;
+      return `Tick ${tick.toLocaleString()} (${tickToTime(tick)})`;
+    }
+
+    function makeXAxis() {
+      return {
+        type: 'linear',
+        title: { display: true, text: 'Game Tick', color: '#888' },
+        ticks: { color: '#888', maxTicksLimit: 12, callback: v => tickToTime(v) },
+        grid: { color: 'rgba(255,255,255,0.05)' },
+      };
+    }
+
+    function makeYAxis(label) {
+      return {
+        title: { display: true, text: label, color: '#888' },
+        ticks: { color: '#888' },
+        grid: { color: 'rgba(255,255,255,0.05)' },
+        beginAtZero: true,
+      };
+    }
+
+    function zoomPanConfig(syncFn) {
+      return {
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'x',
+          onZoomComplete: syncFn ? ({ chart }) => syncFn(chart) : undefined,
+        },
+        pan: {
+          enabled: true,
+          mode: 'x',
+          onPanComplete: syncFn ? ({ chart }) => syncFn(chart) : undefined,
+        },
+      };
+    }
+
+    function syncDetailCharts(sourceChart) {
+      const { min, max } = sourceChart.scales.x;
+      for (const c of [timelineChart, pctTimelineChart]) {
+        if (c && c !== sourceChart) {
+          c.options.scales.x.min = min;
+          c.options.scales.x.max = max;
+          c.update('none');
+        }
+      }
+    }
+
+    function resetDetailZoom() {
+      for (const c of [timelineChart, pctTimelineChart]) {
+        if (c) c.resetZoom();
+      }
+    }
+
+    // ── Timeline chart ─────────────────────────────────────────
+    function buildTimeline(recipeName) {
+      if (timelineChart) timelineChart.destroy();
+      timelineChart = null;
+
+      const samples = recipeData[recipeName];
+      if (!samples || samples.length === 0) return;
+
+      const allIngredients = new Set();
+      for (const s of samples) {
+        if (s.w) for (const ing of Object.keys(s.w)) allIngredients.add(ing);
+      }
+      const ingredients = [...allIngredients].sort();
+      const datasets = [];
+
+      datasets.push({
+        label: 'Total Machines',
+        data: samples.map(s => ({ x: s.tick, y: s.total })),
+        borderColor: '#81c784',
+        backgroundColor: 'rgba(129,199,132,0.08)',
+        borderWidth: 2,
+        fill: true,
+        order: 0,
+      });
+
+      ingredients.forEach((ing, i) => {
+        datasets.push({
+          label: ing,
+          data: samples.map(s => ({ x: s.tick, y: s.w ? (s.w[ing] || 0) : 0 })),
+          borderColor: COLORS[i % COLORS.length],
+          backgroundColor: COLORS[i % COLORS.length] + '20',
+          borderWidth: 1.5,
+          fill: true,
+          order: i + 1,
+        });
+      });
+
+      const ctx = document.getElementById('chart-timeline').getContext('2d');
+      timelineChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { labels: { color: '#ccc', usePointStyle: true, pointStyle: 'line' } },
+            tooltip: { callbacks: { title: tickTooltipTitle } },
+            zoom: zoomPanConfig(syncDetailCharts),
+          },
+          scales: { x: makeXAxis(), y: makeYAxis('Machines') },
+          elements: {
+            point: { radius: 1.5, hitRadius: 5, hoverRadius: 4 },
+            line: { tension: 0.15 },
+          },
+        },
+      });
+    }
+
+    // ── Bottleneck % timeline ──────────────────────────────────
+    function buildPctTimeline(recipeName) {
+      if (pctTimelineChart) pctTimelineChart.destroy();
+      pctTimelineChart = null;
+
+      const samples = recipeData[recipeName];
+      if (!samples || samples.length === 0) return;
+
+      const allIngredients = new Set();
+      for (const s of samples) {
+        if (s.w) for (const ing of Object.keys(s.w)) allIngredients.add(ing);
+      }
+      const ingredients = [...allIngredients].sort();
+      if (ingredients.length === 0) return;
+
+      const datasets = [];
+      ingredients.forEach((ing, i) => {
+        datasets.push({
+          label: ing,
+          data: samples.map(s => {
+            const waitCount = s.w ? (s.w[ing] || 0) : 0;
+            return { x: s.tick, y: s.total > 0 ? (waitCount / s.total * 100) : 0 };
+          }),
+          borderColor: COLORS[i % COLORS.length],
+          backgroundColor: COLORS[i % COLORS.length] + '20',
+          borderWidth: 1.5,
+          fill: true,
+        });
+      });
+
+      const ctx = document.getElementById('chart-pct-timeline').getContext('2d');
+      pctTimelineChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { labels: { color: '#ccc', usePointStyle: true, pointStyle: 'line' } },
+            tooltip: {
+              callbacks: {
+                title: tickTooltipTitle,
+                label: item => `${item.dataset.label}: ${item.parsed.y.toFixed(1)}%`,
+              }
+            },
+            zoom: zoomPanConfig(syncDetailCharts),
+          },
+          scales: {
+            x: makeXAxis(),
+            y: { ...makeYAxis('% Waiting'), max: 100 },
+          },
+          elements: {
+            point: { radius: 1.5, hitRadius: 5, hoverRadius: 4 },
+            line: { tension: 0.15 },
+          },
+        },
+      });
+    }
+
+    // ── Ingredient breakdown ───────────────────────────────────
+    function buildIngredientBreakdown(recipeName) {
+      if (ingredientChart) ingredientChart.destroy();
+      ingredientChart = null;
+
+      const samples = recipeData[recipeName];
+      if (!samples) return;
+
+      const ingredientTotals = {};
+      for (const s of samples) {
+        if (s.w) {
+          for (const [ing, count] of Object.entries(s.w)) {
+            ingredientTotals[ing] = (ingredientTotals[ing] || 0) + count;
+          }
+        }
+      }
+
+      const sorted = Object.entries(ingredientTotals).sort((a, b) => b[1] - a[1]);
+      const container = document.getElementById('ingredient-container');
+
+      if (sorted.length === 0) {
+        container.style.height = 'auto';
+        container.innerHTML = '<p class="hint" style="padding:16px">No waiting data for this recipe</p>';
+        return;
+      }
+
+      const containerHeight = Math.max(120, Math.min(400, sorted.length * 30 + 50));
+      container.style.height = containerHeight + 'px';
+      container.innerHTML = '<canvas id="chart-ingredients"></canvas>';
+
+      const ctx = document.getElementById('chart-ingredients').getContext('2d');
+      ingredientChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: sorted.map(([name]) => name),
+          datasets: [{
+            label: 'Total Waiting Instances',
+            data: sorted.map(([, count]) => count),
+            backgroundColor: sorted.map((_, i) => COLORS[i % COLORS.length]),
+            borderWidth: 0,
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: item => {
+                  const total = sorted.reduce((s, [, c]) => s + c, 0);
+                  const pct = (item.parsed.x / total * 100).toFixed(1);
+                  return `${item.parsed.x} instances (${pct}% of all waiting)`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              title: { display: true, text: 'Total Waiting Instances', color: '#888' },
+              ticks: { color: '#888' },
+              grid: { color: 'rgba(255,255,255,0.05)' },
+            },
+            y: {
+              ticks: { color: '#ccc' },
+              grid: { display: false },
+            },
+          },
+        },
+      });
+    }
+  </script>
+</body>
+</html>

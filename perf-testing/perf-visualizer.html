@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bottleneck Analyzer - Performance Visualizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 24px;
+    }
+    h1 { color: #ff9800; margin-bottom: 4px; }
+    .subtitle { color: #888; font-size: 0.85em; margin-bottom: 20px; }
+    h2 { color: #ccc; margin: 20px 0 10px; font-size: 1.1em; }
+
+    #drop-zone {
+      border: 2px dashed #555;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      margin-bottom: 20px;
+    }
+    #drop-zone:hover, #drop-zone.dragover { border-color: #ff9800; }
+    #drop-zone input { display: none; }
+    #drop-zone code { color: #ff9800; }
+    #error-box { color: #e57373; background: #2a1a1a; padding: 12px; border-radius: 6px; margin: 12px 0; display: none; white-space: pre-wrap; font-family: monospace; font-size: 0.85em; }
+
+    #content { display: none; }
+
+    #summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: #16213e;
+      padding: 12px;
+      border-radius: 6px;
+      border-left: 3px solid #ff9800;
+    }
+    .stat-card .label { font-size: 0.8em; color: #888; }
+    .stat-card .value { font-size: 1.4em; font-weight: bold; color: #fff; }
+
+    .chart-container {
+      background: #16213e;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+      position: relative;
+      height: 250px;
+    }
+
+    #toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+    button {
+      background: #ff9800;
+      color: #000;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover { background: #ffb74d; }
+    .hint { color: #888; font-size: 0.85em; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #16213e;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td { padding: 8px 12px; text-align: right; }
+    th { background: #0f3460; color: #ff9800; font-size: 0.85em; }
+    td { border-top: 1px solid #1a1a2e; font-size: 0.9em; }
+    tr:hover td { background: #1a2744; }
+    td:first-child, th:first-child { text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Bottleneck Analyzer - Performance Visualizer</h1>
+  <p class="subtitle">Analyze per-tick and per-sweep performance data from the Factorio mod</p>
+
+  <div id="error-box"></div>
+  <div id="drop-zone" tabindex="0">
+    <p>Drop <code>bottleneck-analyzer-perf.jsonl</code> here or click to select</p>
+    <p style="font-size:0.8em;color:#888;margin-top:8px">
+      Found in: <code>%APPDATA%\Factorio\script-output\</code>
+    </p>
+    <input type="file" id="file-input" accept=".jsonl,.json,.txt">
+  </div>
+
+  <div id="content">
+    <div id="toolbar">
+      <button onclick="resetZoom()">Reset Zoom</button>
+      <button onclick="reloadFile()">Reload File</button>
+      <span class="hint">Scroll to zoom, drag to pan. All charts are synced.</span>
+    </div>
+
+    <div id="summary"></div>
+
+    <h2>Work Distribution Per Tick</h2>
+    <div class="chart-container"><canvas id="chart-work"></canvas></div>
+
+    <h2>Waiting & Invalid Entities Per Tick</h2>
+    <div class="chart-container"><canvas id="chart-issues"></canvas></div>
+
+    <h2>Cache Hit Rate (%)</h2>
+    <div class="chart-container"><canvas id="chart-cache"></canvas></div>
+
+    <h2>Total Tracked Entities</h2>
+    <div class="chart-container"><canvas id="chart-entities"></canvas></div>
+
+    <h2>Sweep Summary</h2>
+    <div id="sweep-table"></div>
+  </div>
+
+  <script>
+    const allCharts = [];
+    let sweepTicks = [];
+    let lastFile = null;
+
+    // Plugin: draw dashed vertical lines at sweep boundaries
+    const sweepLinesPlugin = {
+      id: 'sweepLines',
+      afterDraw(chart) {
+        const { ctx, chartArea, scales: { x } } = chart;
+        if (!x || sweepTicks.length === 0) return;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 152, 0, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        for (const tick of sweepTicks) {
+          const px = x.getPixelForValue(tick);
+          if (px >= chartArea.left && px <= chartArea.right) {
+            ctx.beginPath();
+            ctx.moveTo(px, chartArea.top);
+            ctx.lineTo(px, chartArea.bottom);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+    };
+    Chart.register(sweepLinesPlugin);
+
+    // File handling
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) { lastFile = e.dataTransfer.files[0]; loadFile(lastFile); }
+    });
+    fileInput.addEventListener('change', e => {
+      if (e.target.files.length) { lastFile = e.target.files[0]; loadFile(lastFile); }
+    });
+
+    function reloadFile() {
+      if (lastFile) loadFile(lastFile);
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error-box');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function loadFile(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          processData(e.target.result);
+        } catch (err) {
+          showError('Error: ' + err.message + '\n' + err.stack);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function processData(text) {
+      const lines = text.trim().split('\n');
+      const ticks = [];
+      const sweeps = [];
+
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.t === 'tk') ticks.push(obj);
+          else if (obj.t === 'sw') sweeps.push(obj);
+        } catch (e) { /* skip malformed */ }
+      }
+
+      if (ticks.length === 0) {
+        alert('No tick data found in file');
+        return;
+      }
+
+      sweepTicks = sweeps.map(s => s.tick);
+
+      buildSummary(ticks, sweeps);
+      buildCharts(ticks);
+      buildSweepTable(sweeps);
+
+      document.getElementById('content').style.display = 'block';
+      document.getElementById('drop-zone').style.display = 'none';
+    }
+
+    function buildSummary(ticks, sweeps) {
+      const totalProc = ticks.reduce((s, t) => s + t.proc, 0);
+      const totalWait = ticks.reduce((s, t) => s + t.wait, 0);
+      const totalInv = ticks.reduce((s, t) => s + t.inv, 0);
+      const totalHits = ticks.reduce((s, t) => s + t.chit, 0);
+      const totalMisses = ticks.reduce((s, t) => s + t.cmis, 0);
+      const hitRate = totalHits + totalMisses > 0
+        ? (totalHits / (totalHits + totalMisses) * 100).toFixed(1) : 'N/A';
+      const avgBatch = ticks.length > 0
+        ? (totalProc / ticks.length).toFixed(1) : '0';
+      const maxEnt = Math.max(...ticks.map(t => t.ent));
+      const tickRange = ticks.length > 1
+        ? ticks[ticks.length - 1].tick - ticks[0].tick : 0;
+      const durationSec = (tickRange / 60).toFixed(1);
+
+      const stats = [
+        { label: 'Ticks Logged', value: ticks.length.toLocaleString() },
+        { label: 'Duration', value: durationSec + 's' },
+        { label: 'Sweeps', value: sweeps.length },
+        { label: 'Max Entities', value: maxEnt.toLocaleString() },
+        { label: 'Avg Processed/Tick', value: avgBatch },
+        { label: 'Cache Hit Rate', value: hitRate + '%' },
+        { label: 'Total Waiting', value: totalWait.toLocaleString() },
+        { label: 'Total Invalid', value: totalInv.toLocaleString() },
+      ];
+
+      document.getElementById('summary').innerHTML = stats.map(s =>
+        `<div class="stat-card">
+          <div class="label">${s.label}</div>
+          <div class="value">${s.value}</div>
+        </div>`
+      ).join('');
+    }
+
+    function makeChartOptions(yLabel) {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: '#ccc', usePointStyle: true, pointStyle: 'line' }
+          },
+          tooltip: {
+            callbacks: {
+              title(items) {
+                if (!items.length) return '';
+                const tick = items[0].parsed.x;
+                return `Tick ${tick.toLocaleString()} (${(tick / 60).toFixed(1)}s)`;
+              }
+            }
+          },
+          zoom: {
+            zoom: {
+              wheel: { enabled: true },
+              pinch: { enabled: true },
+              mode: 'x',
+              onZoomComplete: ({ chart }) => syncZoom(chart),
+            },
+            pan: {
+              enabled: true,
+              mode: 'x',
+              onPanComplete: ({ chart }) => syncZoom(chart),
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            title: { display: true, text: 'Tick', color: '#888' },
+            ticks: { color: '#888', maxTicksLimit: 12 },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+          },
+          y: {
+            title: { display: true, text: yLabel, color: '#888' },
+            ticks: { color: '#888' },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            beginAtZero: true,
+          },
+        },
+        elements: {
+          point: { radius: 0, hitRadius: 4, hoverRadius: 3 },
+          line: { borderWidth: 1.5 },
+        },
+      };
+    }
+
+    function createChart(canvasId, datasets, yLabel) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      const chart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: makeChartOptions(yLabel),
+      });
+      allCharts.push(chart);
+      return chart;
+    }
+
+    function buildCharts(ticks) {
+      allCharts.forEach(c => c.destroy());
+      allCharts.length = 0;
+
+      createChart('chart-work', [
+        {
+          label: 'Processed',
+          data: ticks.map(t => ({ x: t.tick, y: t.proc })),
+          borderColor: '#4fc3f7',
+          backgroundColor: 'rgba(79,195,247,0.1)',
+          fill: true,
+        },
+        {
+          label: 'Batch Size',
+          data: ticks.map(t => ({ x: t.tick, y: t.batch })),
+          borderColor: '#81c784',
+          borderDash: [4, 2],
+        },
+      ], 'Entities');
+
+      createChart('chart-issues', [
+        {
+          label: 'Waiting',
+          data: ticks.map(t => ({ x: t.tick, y: t.wait })),
+          borderColor: '#ffb74d',
+          backgroundColor: 'rgba(255,183,77,0.1)',
+          fill: true,
+        },
+        {
+          label: 'Invalid',
+          data: ticks.map(t => ({ x: t.tick, y: t.inv })),
+          borderColor: '#e57373',
+          backgroundColor: 'rgba(229,115,115,0.1)',
+          fill: true,
+        },
+      ], 'Count');
+
+      createChart('chart-cache', [
+        {
+          label: 'Hit Rate',
+          data: ticks.map(t => {
+            const total = t.chit + t.cmis;
+            return { x: t.tick, y: total > 0 ? (t.chit / total * 100) : null };
+          }),
+          borderColor: '#ce93d8',
+          backgroundColor: 'rgba(206,147,216,0.1)',
+          fill: true,
+        },
+      ], '%');
+
+      createChart('chart-entities', [
+        {
+          label: 'Tracked Entities',
+          data: ticks.map(t => ({ x: t.tick, y: t.ent })),
+          borderColor: '#a5d6a7',
+          backgroundColor: 'rgba(165,214,167,0.1)',
+          fill: true,
+        },
+      ], 'Count');
+    }
+
+    function syncZoom(sourceChart) {
+      const { min, max } = sourceChart.scales.x;
+      for (const c of allCharts) {
+        if (c !== sourceChart) {
+          c.options.scales.x.min = min;
+          c.options.scales.x.max = max;
+          c.update('none');
+        }
+      }
+    }
+
+    function resetZoom() {
+      for (const c of allCharts) {
+        c.resetZoom();
+      }
+    }
+
+    function buildSweepTable(sweeps) {
+      const el = document.getElementById('sweep-table');
+      if (sweeps.length === 0) {
+        el.innerHTML = '<p class="hint">No sweep data recorded</p>';
+        return;
+      }
+
+      let html = `<table>
+        <thead><tr>
+          <th>#</th>
+          <th>Start Tick</th>
+          <th>End Tick</th>
+          <th>Duration</th>
+          <th>Entities</th>
+          <th>Invalid</th>
+          <th>Waiting</th>
+          <th>Cache Hit%</th>
+          <th>Recipes</th>
+        </tr></thead><tbody>`;
+
+      for (let i = 0; i < sweeps.length; i++) {
+        const s = sweeps[i];
+        const hitRate = (s.chit + s.cmis) > 0
+          ? (s.chit / (s.chit + s.cmis) * 100).toFixed(1) : 'N/A';
+        html += `<tr>
+          <td>${i + 1}</td>
+          <td>${s.start.toLocaleString()}</td>
+          <td>${s.tick.toLocaleString()}</td>
+          <td>${s.dur} ticks (${(s.dur / 60).toFixed(1)}s)</td>
+          <td>${s.ent.toLocaleString()}</td>
+          <td>${s.inv}</td>
+          <td>${s.wait}</td>
+          <td>${hitRate}%</td>
+          <td>${s.rec}</td>
+        </tr>`;
+      }
+
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    }
+  </script>
+</body>
+</html>

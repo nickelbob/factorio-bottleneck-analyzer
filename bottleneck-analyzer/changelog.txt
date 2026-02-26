@@ -1,4 +1,8 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.7
+  Bugfixes:
+    - Fixed crash on toggle when upgrading from versions with 6 time slices to 5 (stale time_slice_index)
+---------------------------------------------------------------------------------------------------
 Version: 0.3.6
   Features:
     - Added "Max Samples Per Recipe" setting (20-1000, default 100) to control ring buffer size and save file size

@@ -3,7 +3,6 @@ local data_store = require("scripts.data-store")
 local gui = {}
 
 local TIME_SLICES = {
-  { label = "1m",  ticks = 60 * 60 },
   { label = "5m",  ticks = 5 * 60 * 60 },
   { label = "10m", ticks = 10 * 60 * 60 },
   { label = "30m", ticks = 30 * 60 * 60 },
@@ -24,7 +23,7 @@ local function get_player_state(player_index)
     storage.player_gui[player_index] = {
       open = false,
       selected_item = nil,
-      time_slice_index = 2, -- default 5m
+      time_slice_index = 1, -- default 5m
       selected_recipe = nil,
       history = {},  -- stack of previous selected_item values for back navigation
     }
@@ -57,12 +56,22 @@ local function build_ingredient_display(container, recipe_name, min_tick, select
     return
   end
 
-  local count_label = container.add({
-    type = "label",
-    caption = #samples .. " / " .. data_store.get_max_samples() .. " samples",
-    style = "subheader_caption_label",
-  })
-  count_label.style.bottom_margin = 4
+  local sample_rate = settings.global["bottleneck-analyzer-sample-rate"].value
+  local min_samples = math.floor(5 * 60 * 60 / (sample_rate * 60))
+  if min_samples < 1 then min_samples = 1 end
+
+  if #samples < min_samples then
+    local warn_label = container.add({
+      type = "label",
+      caption = "Low data: " .. #samples .. " of ~" .. min_samples .. " samples",
+      tooltip = "Bottleneck percentages are most accurate with at least 5 minutes of data."
+        .. " At the current sample rate of " .. sample_rate .. "s, that means ~" .. min_samples .. " samples."
+        .. " You have " .. #samples .. " so far. Let the game run longer or lower the sample rate in mod settings.",
+      style = "subheader_caption_label",
+    })
+    warn_label.style.font_color = { r = 1, g = 0.8, b = 0.3 }
+    warn_label.style.bottom_margin = 4
+  end
 
   -- Get the recipe prototype for ingredient list
   local recipe_proto = prototypes.recipe[recipe_name]

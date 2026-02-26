@@ -40,6 +40,13 @@ script.on_configuration_changed(function(data)
   full_init()
 end)
 
+-- Runtime setting changes
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+  if event.setting == "bottleneck-analyzer-max-samples" then
+    data_store.init()
+  end
+end)
+
 -- Entity build events
 local function on_entity_built(event)
   tracker.track_entity(event.entity)

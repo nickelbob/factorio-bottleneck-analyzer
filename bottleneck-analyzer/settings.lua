@@ -14,5 +14,14 @@ data:extend({
     setting_type = "runtime-global",
     default_value = true,
     order = "b",
+  },
+  {
+    type = "int-setting",
+    name = "bottleneck-analyzer-max-samples",
+    setting_type = "runtime-global",
+    default_value = 100,
+    minimum_value = 20,
+    maximum_value = 1000,
+    order = "c",
   }
 })

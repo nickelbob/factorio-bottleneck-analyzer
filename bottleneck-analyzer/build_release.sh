@@ -30,8 +30,8 @@ rm -rf "$ZIP_NAME/.claude"
 rm -f "$ZIP_NAME/CLAUDE.md"
 rm -f "$ZIP_NAME/build_release.sh"
 
-# Create zip
-zip -r "$ZIP_NAME.zip" "$ZIP_NAME"
+# Create zip (7zip to ensure forward slashes on Windows)
+"/c/Program Files/7-Zip/7z.exe" a -tzip "$ZIP_NAME.zip" "$ZIP_NAME"
 
 # Clean up build directory
 rm -rf "$ZIP_NAME"

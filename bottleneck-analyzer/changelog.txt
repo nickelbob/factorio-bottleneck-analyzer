@@ -1,0 +1,63 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.3.5
+  Optimizations:
+    - Status caching: skip entity.status calls on machines that were working last sweep (10% recheck rate, ~10% CPU reduction)
+    - Fisher-Yates shuffle on entity list for more even per-tick workload distribution
+  Bugfixes:
+    - Re-enabled building recipe filter (recipes that produce placeable items are excluded from results)
+  Changes:
+    - Stripped all profiling/debug overhead from production code
+---------------------------------------------------------------------------------------------------
+Version: 0.3.1
+  Bugfixes:
+    - Reduced save file size by removing redundant cached data from storage
+    - GUI layout and display fixes
+---------------------------------------------------------------------------------------------------
+Version: 0.3.0
+  Optimizations:
+    - Chunked per-tick sampling: work is spread across ticks so each tick only processes a small batch instead of all machines at once
+    - Recipe cache to avoid repeated prototype lookups
+---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+  Features:
+    - Added /bottleneck-dump command to export recipe data as JSON
+    - Added /bottleneck-status command for tracking diagnostics
+    - Added /bottleneck-reset command to clear sample data
+  Optimizations:
+    - Fixed major performance issue with large factories
+  Gui:
+    - Ingredients sorted by severity (highest bottleneck first)
+    - Scrollable recipe area for recipes with many ingredients
+---------------------------------------------------------------------------------------------------
+Version: 0.1.3
+  Features:
+    - Keyboard shortcut (Ctrl+Shift+B) to toggle GUI
+    - Esc to close window
+    - Clickable fluid ingredients for drill-down navigation
+  Bugfixes:
+    - Fixed focus steal when GUI opens
+---------------------------------------------------------------------------------------------------
+Version: 0.1.2
+  Gui:
+    - Sort ingredients by severity
+    - Scrollable recipe area
+  Changes:
+    - Removed top bottlenecks panel (redundant with per-recipe view)
+---------------------------------------------------------------------------------------------------
+Version: 0.1.1
+  Bugfixes:
+    - Fixed item selector blanking when switching items
+    - Fixed signal type parsing for fluids
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+  Major Features:
+    - Initial release
+    - Per-ingredient bottleneck percentages
+    - Time-slice filtering (1m, 5m, 10m, 30m, 1h, all)
+    - Multi-recipe tabbed views
+    - Click-through ingredient navigation with back button
+    - Color-coded bars (green/yellow/red)
+    - Configurable sample rate (0.1s to 300s)
+    - Ring buffer capped at 100 samples per recipe
+  Compatibility:
+    - Works with assembling machines, furnaces, and modded crafting entities

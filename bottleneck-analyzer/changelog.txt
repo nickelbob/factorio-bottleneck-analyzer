@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.6
+  Features:
+    - Added "Max Samples Per Recipe" setting (20-1000, default 100) to control ring buffer size and save file size
+  Gui:
+    - Replaced sample count label with a yellow low-data warning that appears when less than 5 minutes of data has been collected
+    - Low-data warning includes a tooltip explaining what it means and what to do
+    - Removed 1m time slice (too few samples at default sample rate to be useful)
+---------------------------------------------------------------------------------------------------
 Version: 0.3.5
   Optimizations:
     - Status caching: skip entity.status calls on machines that were working last sweep (10% recheck rate, ~10% CPU reduction)

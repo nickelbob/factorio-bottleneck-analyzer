@@ -9,6 +9,9 @@ local on_time_slice_changed = script.generate_event_name()
 -- Re-entrancy guard: suppress re-broadcast when handling external events
 local handling_external = false
 
+-- Callback for when an external item arrives (set by control.lua)
+local on_external_item_callback = nil
+
 --- Accepted prototype types for open_page.
 local allowed_types = {
   LuaItemPrototype = true,
@@ -147,14 +150,15 @@ local function subscribe_to_events()
     if functions["get_on_item_selected"] then
       local event_id = remote.call(iface, "get_on_item_selected")
       if event_id then
+        local source_iface = iface
         script.on_event(event_id, function(e)
           local player = game.get_player(e.player_index)
           if not player then return end
           local item_name = e.item_name
           if item_name and (prototypes.item[item_name] or prototypes.fluid[item_name]) then
-            handling_external = true
-            gui.select_item(player, item_name)
-            handling_external = false
+            if on_external_item_callback then
+              on_external_item_callback(e.player_index, item_name, source_iface)
+            end
           end
         end)
         log("Bottleneck Analyzer: subscribed to " .. iface .. ".get_on_item_selected")
@@ -181,8 +185,13 @@ local function subscribe_to_events()
   end
 end
 
+local function set_on_external_item_callback(cb)
+  on_external_item_callback = cb
+end
+
 return {
   raise_item_selected = raise_item_selected,
   raise_time_slice_changed = raise_time_slice_changed,
   subscribe_to_events = subscribe_to_events,
+  set_on_external_item_callback = set_on_external_item_callback,
 }

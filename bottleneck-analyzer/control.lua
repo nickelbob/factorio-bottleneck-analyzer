@@ -7,6 +7,18 @@ local remote_hooks = require("scripts.remote-interface")
 gui.on_item_selected_callback = remote_hooks.raise_item_selected
 gui.on_time_slice_changed_callback = remote_hooks.raise_time_slice_changed
 
+-- When an external mod broadcasts an item selection, track it and update the recent panel
+remote_hooks.set_on_external_item_callback(function(player_index, item_name, source)
+  gui.add_recent_item(player_index, item_name, source)
+  local player = game.get_player(player_index)
+  if player then
+    local state = storage.player_gui and storage.player_gui[player_index]
+    if state and state.open then
+      gui.update_recent_panel(player)
+    end
+  end
+end)
+
 -- Entity type filters for build/destroy events
 local ENTITY_FILTERS = {
   { filter = "type", type = "assembling-machine" },

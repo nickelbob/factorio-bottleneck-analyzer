@@ -23,6 +23,9 @@ function gui.init()
   if not storage.player_gui then
     storage.player_gui = {}
   end
+  if not storage.recent_external_items then
+    storage.recent_external_items = {}
+  end
 end
 
 --- Get or create player GUI state.
@@ -47,6 +50,79 @@ local function destroy_main_window(player)
   local screen = player.gui.screen
   if screen["bottleneck-analyzer-main"] then
     screen["bottleneck-analyzer-main"].destroy()
+  end
+end
+
+--- Add an externally-selected item to the recent items list for a player.
+function gui.add_recent_item(player_index, item_name, source)
+  if not storage.recent_external_items then
+    storage.recent_external_items = {}
+  end
+  local list = storage.recent_external_items[player_index]
+  if not list then
+    list = {}
+    storage.recent_external_items[player_index] = list
+  end
+
+  -- Deduplicate: remove existing entry for this item
+  for i = #list, 1, -1 do
+    if list[i].item_name == item_name then
+      table.remove(list, i)
+    end
+  end
+
+  -- Insert at front
+  table.insert(list, 1, { item_name = item_name, source = source })
+
+  -- Cap at 5
+  while #list > 5 do
+    list[#list] = nil
+  end
+end
+
+--- Build or update the recent items inside the titlebar.
+function gui.update_recent_panel(player)
+  local main = player.gui.screen["bottleneck-analyzer-main"]
+  if not main then return end
+
+  -- Find the titlebar (first flow child of the main frame)
+  local titlebar
+  for _, child in pairs(main.children) do
+    if child.type == "flow" then
+      titlebar = child
+      break
+    end
+  end
+  if not titlebar then return end
+
+  local flow = titlebar["bottleneck-analyzer-recent-flow"]
+  if not flow then return end
+
+  flow.clear()
+
+  local items = storage.recent_external_items and storage.recent_external_items[player.index]
+  if not items or #items == 0 then return end
+
+  for i, entry in ipairs(items) do
+    local sprite_path
+    if prototypes.item[entry.item_name] then
+      sprite_path = "item/" .. entry.item_name
+    elseif prototypes.fluid[entry.item_name] then
+      sprite_path = "fluid/" .. entry.item_name
+    end
+
+    if sprite_path then
+      local proto = prototypes.item[entry.item_name] or prototypes.fluid[entry.item_name]
+      local tooltip = proto and proto.localised_name or entry.item_name
+      flow.add({
+        type = "sprite-button",
+        name = "bottleneck-analyzer-recent-item-" .. i,
+        sprite = sprite_path,
+        tooltip = tooltip,
+        style = "frame_action_button",
+        tags = { item_name = entry.item_name },
+      })
+    end
   end
 end
 
@@ -237,6 +313,13 @@ local function build_main_window(player)
   drag.style.height = 24
   drag.drag_target = frame
 
+  -- Recent external items (populated by update_recent_panel)
+  titlebar.add({
+    type = "flow",
+    name = "bottleneck-analyzer-recent-flow",
+    direction = "horizontal",
+  }).style.horizontal_spacing = 2
+
   titlebar.add({
     type = "sprite-button",
     name = "bottleneck-analyzer-close",
@@ -339,6 +422,9 @@ local function build_main_window(player)
 
   -- Populate: item detail view or top bottlenecks overview
   gui.update_recipe_area(player)
+
+  -- Show recent external items panel (if any)
+  gui.update_recent_panel(player)
 end
 
 --- Update the chooser element to match the current selected_item state.
@@ -563,6 +649,18 @@ function gui.on_click(event)
       gui.update_recipe_area(player)
       if gui.on_time_slice_changed_callback then
         gui.on_time_slice_changed_callback(player.index, TIME_SLICES[idx].label)
+      end
+    end
+    return
+  end
+
+  -- Recent items panel buttons
+  if name:match("^bottleneck%-analyzer%-recent%-item%-") then
+    local tags = element.tags
+    if tags and tags.item_name then
+      gui.select_item(player, tags.item_name)
+      if gui.on_item_selected_callback then
+        gui.on_item_selected_callback(event.player_index, tags.item_name)
       end
     end
     return

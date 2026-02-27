@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.8
+  Features:
+    - Cross-mod recent items panel: items selected in other mods (e.g. Cybersyn) appear as clickable buttons in the titlebar for quick access
+    - Tracks last 5 external item selections per player with deduplication
+  Changes:
+    - External item events no longer force-open the Bottleneck Analyzer window; items are tracked silently and shown when you open it
+---------------------------------------------------------------------------------------------------
 Version: 0.3.7
   Bugfixes:
     - Fixed crash on toggle when upgrading from versions with 6 time slices to 5 (stale time_slice_index)

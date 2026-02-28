@@ -113,7 +113,7 @@ function remote_interface.get_on_time_slice_changed()
   return on_time_slice_changed
 end
 
-function remote_interface.version()
+function remote_interface.interop_version()
   return 1
 end
 

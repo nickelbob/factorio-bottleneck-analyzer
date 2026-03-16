@@ -9,13 +9,46 @@ local TRACKED_TYPES = {
 
 local MAX_BATCH_SIZE = 500
 local RECHECK_COUNT = 50  -- random recipe cache re-checks per sweep
-local STATUS_RECHECK_RATE = 10  -- recheck 1 in N "working" entities per sweep
+local STATUS_RECHECK_RATE = 5  -- recheck 1 in N "working" entities per sweep
 
 -- Transient state (not saved, rebuilt each sweep)
 local current_aggregation = {}
 
 -- Status cache: unit_number -> true if waiting last sweep
 local status_cache = {}
+
+-- Diagnostics: per-sweep counters for assumption validation
+local sweep_stats
+
+local function reset_sweep_stats(tick, entity_count)
+  sweep_stats = {
+    start_tick = tick,
+    entity_count_at_start = entity_count,
+    -- A1: status persistence
+    recheck_hits = 0,
+    recheck_total = 0,
+    cached_waiting_still_waiting = 0,
+    cached_waiting_now_working = 0,
+    -- A2: recipe stability
+    recipe_recheck_changed = 0,
+    recipe_recheck_total = 0,
+    -- A3: batch cost variance
+    max_waiting_checks_in_batch = 0,
+    total_waiting_checks = 0,
+    batch_count = 0,
+    -- A5: batch cap
+    batches_at_max_size = 0,
+    -- A6: building recipe exclusion
+    building_recipe_skipped = 0,
+    -- A8: short ingredient reports
+    short_ingredient_reports = 0,
+    -- A9: invalid entities
+    invalid_entities = 0,
+    -- A4: churn
+    entities_added = 0,
+    entities_removed = 0,
+  }
+end
 
 ------------------------------------------------------------------------
 -- Recipe helpers
@@ -94,6 +127,9 @@ function tracker.track_entity(entity)
   add_to_entity_list(un)
   local recipe = get_entity_recipe_safe(entity)
   storage.recipe_cache[un] = recipe and recipe.name or false
+  if sweep_stats then
+    sweep_stats.entities_added = sweep_stats.entities_added + 1
+  end
 end
 
 function tracker.untrack_entity(entity)
@@ -104,6 +140,9 @@ function tracker.untrack_entity(entity)
   remove_from_entity_list(un)
   storage.recipe_cache[un] = nil
   status_cache[un] = nil
+  if sweep_stats then
+    sweep_stats.entities_removed = sweep_stats.entities_removed + 1
+  end
 end
 
 function tracker.scan_surfaces()
@@ -197,8 +236,16 @@ local function do_staleness_recheck()
     local un = list[idx]
     local entity = storage.tracked_entities[un]
     if entity and entity.valid then
+      local old_cached = storage.recipe_cache[un]
       local recipe = get_entity_recipe_safe(entity)
-      storage.recipe_cache[un] = recipe and recipe.name or false
+      local new_name = recipe and recipe.name or false
+      storage.recipe_cache[un] = new_name
+      if sweep_stats then
+        sweep_stats.recipe_recheck_total = sweep_stats.recipe_recheck_total + 1
+        if old_cached ~= new_name then
+          sweep_stats.recipe_recheck_changed = sweep_stats.recipe_recheck_changed + 1
+        end
+      end
     end
   end
 end
@@ -215,13 +262,18 @@ function tracker.sample_chunk(tick)
   -- Start of new sweep?
   if cursor == 1 then
     current_aggregation = {}
+    reset_sweep_stats(tick, total)
   end
 
   local batch_size = get_batch_size()
+  if sweep_stats and batch_size >= MAX_BATCH_SIZE then
+    sweep_stats.batches_at_max_size = sweep_stats.batches_at_max_size + 1
+  end
   local end_idx = cursor + batch_size - 1
   if end_idx > total then end_idx = total end
 
   local to_remove = {}
+  local batch_waiting_checks = 0
 
   for i = cursor, end_idx do
     local un = list[i]
@@ -229,6 +281,7 @@ function tracker.sample_chunk(tick)
 
     if not (entity and entity.valid) then
       to_remove[#to_remove + 1] = un
+      if sweep_stats then sweep_stats.invalid_entities = sweep_stats.invalid_entities + 1 end
     else
       local recipe_name = storage.recipe_cache[un]
       if recipe_name == nil then
@@ -246,7 +299,10 @@ function tracker.sample_chunk(tick)
           local agg = current_aggregation[recipe_name]
           agg.total = agg.total + 1
 
-          if status_cache[un] or (math.random(1, STATUS_RECHECK_RATE) == 1) then
+          local was_cached_waiting = status_cache[un]
+          local is_spot_check = not was_cached_waiting and (math.random(1, STATUS_RECHECK_RATE) == 1)
+
+          if was_cached_waiting or is_spot_check then
             local status = entity.status
 
             local is_waiting = status == defines.entity_status.item_ingredient_shortage
@@ -255,17 +311,46 @@ function tracker.sample_chunk(tick)
 
             status_cache[un] = is_waiting
 
+            -- A1: track status transitions
+            if sweep_stats then
+              if was_cached_waiting then
+                if is_waiting then
+                  sweep_stats.cached_waiting_still_waiting = sweep_stats.cached_waiting_still_waiting + 1
+                else
+                  sweep_stats.cached_waiting_now_working = sweep_stats.cached_waiting_now_working + 1
+                end
+              elseif is_spot_check then
+                sweep_stats.recheck_total = sweep_stats.recheck_total + 1
+                if is_waiting then
+                  sweep_stats.recheck_hits = sweep_stats.recheck_hits + 1
+                end
+              end
+            end
+
             if is_waiting then
+              batch_waiting_checks = batch_waiting_checks + 1
               local short = get_short_ingredients(entity, recipe_proto)
               if short then
                 for ingredient_name, _ in pairs(short) do
                   agg.waiting[ingredient_name] = (agg.waiting[ingredient_name] or 0) + 1
+                  if sweep_stats then sweep_stats.short_ingredient_reports = sweep_stats.short_ingredient_reports + 1 end
                 end
               end
             end
           end
         end
+      elseif recipe_name and is_building_recipe(recipe_name) then
+        if sweep_stats then sweep_stats.building_recipe_skipped = sweep_stats.building_recipe_skipped + 1 end
       end
+    end
+  end
+
+  -- A3: batch cost variance
+  if sweep_stats then
+    sweep_stats.batch_count = sweep_stats.batch_count + 1
+    sweep_stats.total_waiting_checks = sweep_stats.total_waiting_checks + batch_waiting_checks
+    if batch_waiting_checks > sweep_stats.max_waiting_checks_in_batch then
+      sweep_stats.max_waiting_checks_in_batch = batch_waiting_checks
     end
   end
 
@@ -288,6 +373,13 @@ function tracker.sample_chunk(tick)
 
     -- Staleness recheck
     do_staleness_recheck()
+
+    -- Diagnostics logging
+    if sweep_stats and settings.global["bottleneck-analyzer-diagnostics"].value then
+      sweep_stats.end_tick = tick
+      sweep_stats.entity_count_at_end = #storage.entity_list
+      helpers.write_file("bottleneck-diagnostics.log", serpent.line(sweep_stats) .. "\n", true)
+    end
 
     -- Reset for next sweep
     current_aggregation = {}

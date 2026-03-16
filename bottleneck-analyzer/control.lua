@@ -100,6 +100,14 @@ script.on_event(defines.events.on_lua_shortcut, function(event)
   end
 end)
 
+-- Keyboard shortcut toggle
+script.on_event("bottleneck-analyzer-toggle-key", function(event)
+  local player = game.get_player(event.player_index)
+  if player then
+    gui.toggle(player)
+  end
+end)
+
 -- GUI events
 script.on_event(defines.events.on_gui_click, function(event)
   gui.on_click(event)

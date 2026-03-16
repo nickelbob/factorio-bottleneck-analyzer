@@ -23,5 +23,12 @@ data:extend({
     minimum_value = 20,
     maximum_value = 1000,
     order = "c",
+  },
+  {
+    type = "bool-setting",
+    name = "bottleneck-analyzer-diagnostics",
+    setting_type = "runtime-global",
+    default_value = false,
+    order = "d",
   }
 })

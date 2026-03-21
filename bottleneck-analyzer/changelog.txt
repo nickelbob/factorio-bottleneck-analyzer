@@ -1,4 +1,8 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.9
+  Changes:
+    - Release for mod portal with cross-mod interop support
+---------------------------------------------------------------------------------------------------
 Version: 0.3.8
   Features:
     - Cross-mod recent items panel: items selected in other mods (e.g. Cybersyn) appear as clickable buttons in the titlebar for quick access

@@ -620,6 +620,10 @@ function gui.on_click(event)
       state.selected_recipe = nil
       gui.sync_chooser(player)
       gui.update_recipe_area(player)
+      if state.selected_item then
+        gui.add_recent_item(player.index, state.selected_item, "bottleneck-analyzer")
+        gui.update_recent_panel(player)
+      end
     end
     return
   end
@@ -662,6 +666,8 @@ function gui.on_click(event)
       if gui.on_item_selected_callback then
         gui.on_item_selected_callback(event.player_index, tags.item_name)
       end
+      gui.add_recent_item(player.index, tags.item_name, "bottleneck-analyzer")
+      gui.update_recent_panel(player)
     end
     return
   end
@@ -680,6 +686,8 @@ function gui.on_click(event)
     if gui.on_item_selected_callback then
       gui.on_item_selected_callback(player.index, ing_name)
     end
+    gui.add_recent_item(player.index, ing_name, "bottleneck-analyzer")
+    gui.update_recent_panel(player)
     return
   end
 
@@ -714,6 +722,10 @@ function gui.on_elem_changed(event)
   gui.update_recipe_area(player)
   if state.selected_item and gui.on_item_selected_callback then
     gui.on_item_selected_callback(player.index, state.selected_item)
+  end
+  if state.selected_item then
+    gui.add_recent_item(player.index, state.selected_item, "bottleneck-analyzer")
+    gui.update_recent_panel(player)
   end
 end
 

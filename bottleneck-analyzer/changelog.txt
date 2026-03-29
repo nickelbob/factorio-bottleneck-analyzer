@@ -1,4 +1,8 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.4.0
+  Features:
+    - Recent items header bar now tracks all item selections, not just cross-mod ones — acts as a history of recently viewed items
+---------------------------------------------------------------------------------------------------
 Version: 0.3.9
   Changes:
     - Release for mod portal with cross-mod interop support

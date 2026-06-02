@@ -11,13 +11,14 @@ local MAX_BATCH_SIZE = 500
 local RECHECK_COUNT = 50  -- random recipe cache re-checks per sweep
 local STATUS_RECHECK_RATE = 5  -- recheck 1 in N "working" entities per sweep
 
--- Transient state (not saved, rebuilt each sweep)
-local current_aggregation = {}
+-- NOTE: per-recipe sweep accumulation (storage.current_aggregation) and the
+-- per-entity waiting-status cache (storage.status_cache) MUST live in storage,
+-- not in module locals. They span multiple ticks and feed values written into
+-- storage.samples, so a peer that loads the save mid-sweep (e.g. a client
+-- joining) would otherwise start them empty and desync. See init_storage().
 
--- Status cache: unit_number -> true if waiting last sweep
-local status_cache = {}
-
--- Diagnostics: per-sweep counters for assumption validation
+-- Diagnostics: per-sweep counters for assumption validation. Local is fine:
+-- these only drive diagnostic file writes, never storage / synced game state.
 local sweep_stats
 
 local function reset_sweep_stats(tick, entity_count)
@@ -95,6 +96,8 @@ function tracker.init_storage()
   if not storage.entity_list_index then storage.entity_list_index = {} end
   if not storage.recipe_cache then storage.recipe_cache = {} end
   if not storage.sample_cursor then storage.sample_cursor = 1 end
+  if not storage.current_aggregation then storage.current_aggregation = {} end
+  if not storage.status_cache then storage.status_cache = {} end
 end
 
 local function add_to_entity_list(unit_number)
@@ -139,7 +142,7 @@ function tracker.untrack_entity(entity)
   storage.tracked_entities[un] = nil
   remove_from_entity_list(un)
   storage.recipe_cache[un] = nil
-  status_cache[un] = nil
+  storage.status_cache[un] = nil
   if sweep_stats then
     sweep_stats.entities_removed = sweep_stats.entities_removed + 1
   end
@@ -151,6 +154,8 @@ function tracker.scan_surfaces()
   storage.entity_list_index = {}
   storage.recipe_cache = {}
   storage.sample_cursor = 1
+  storage.current_aggregation = {}
+  storage.status_cache = {}
   for _, surface in pairs(game.surfaces) do
     for etype, _ in pairs(TRACKED_TYPES) do
       local entities = surface.find_entities_filtered({ type = etype })
@@ -261,7 +266,7 @@ function tracker.sample_chunk(tick)
 
   -- Start of new sweep?
   if cursor == 1 then
-    current_aggregation = {}
+    storage.current_aggregation = {}
     reset_sweep_stats(tick, total)
   end
 
@@ -293,13 +298,13 @@ function tracker.sample_chunk(tick)
       if recipe_name and not is_building_recipe(recipe_name) then
         local recipe_proto = prototypes.recipe[recipe_name]
         if recipe_proto then
-          if not current_aggregation[recipe_name] then
-            current_aggregation[recipe_name] = { total = 0, waiting = {} }
+          if not storage.current_aggregation[recipe_name] then
+            storage.current_aggregation[recipe_name] = { total = 0, waiting = {} }
           end
-          local agg = current_aggregation[recipe_name]
+          local agg = storage.current_aggregation[recipe_name]
           agg.total = agg.total + 1
 
-          local was_cached_waiting = status_cache[un]
+          local was_cached_waiting = storage.status_cache[un]
           local is_spot_check = not was_cached_waiting and (math.random(1, STATUS_RECHECK_RATE) == 1)
 
           if was_cached_waiting or is_spot_check then
@@ -309,7 +314,7 @@ function tracker.sample_chunk(tick)
                 or status == defines.entity_status.fluid_ingredient_shortage
                 or status == defines.entity_status.no_ingredients
 
-            status_cache[un] = is_waiting
+            storage.status_cache[un] = is_waiting
 
             -- A1: track status transitions
             if sweep_stats then
@@ -359,14 +364,14 @@ function tracker.sample_chunk(tick)
     storage.tracked_entities[un] = nil
     remove_from_entity_list(un)
     storage.recipe_cache[un] = nil
-    status_cache[un] = nil
+    storage.status_cache[un] = nil
   end
 
   -- Advance cursor
   cursor = end_idx + 1
   if cursor > #storage.entity_list then
     -- Sweep complete: write aggregated data to ring buffers
-    for recipe_name, agg in pairs(current_aggregation) do
+    for recipe_name, agg in pairs(storage.current_aggregation) do
       local waiting = next(agg.waiting) and agg.waiting or nil
       data_store.record_sample(recipe_name, tick, agg.total, waiting)
     end
@@ -382,7 +387,7 @@ function tracker.sample_chunk(tick)
     end
 
     -- Reset for next sweep
-    current_aggregation = {}
+    storage.current_aggregation = {}
     cursor = 1
   end
 

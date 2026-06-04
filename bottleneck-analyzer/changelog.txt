@@ -1,4 +1,8 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.4.1
+  Bugfixes:
+    - Fixed a multiplayer desync: per-sweep aggregation and the entity status cache were kept outside the save, so a client joining mid-sweep diverged from the server. Both are now persisted in mod storage, keeping all peers in sync (this also resolves a knock-on desync of the shared random generator that affected other mods).
+---------------------------------------------------------------------------------------------------
 Version: 0.4.0
   Features:
     - Recent items header bar now tracks all item selections, not just cross-mod ones — acts as a history of recently viewed items
